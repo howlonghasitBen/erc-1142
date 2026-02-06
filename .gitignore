@@ -1,0 +1,27 @@
+# Dependencies
+lib/
+node_modules/
+
+# Foundry build artifacts
+cache/
+out/
+broadcast/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
