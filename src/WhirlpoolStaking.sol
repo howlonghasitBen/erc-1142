@@ -294,7 +294,11 @@ contract WhirlpoolStaking is ReentrancyGuard {
         userGlobalWeight[msg.sender] += weightAdded;
         totalGlobalWeight += weightAdded;
 
-        // Update virtual reserves in SurfSwap
+        // Transfer WETH to SurfSwap for actual liquidity
+        IERC20(weth).approve(surfSwap, amount);
+        IERC20(weth).safeTransfer(surfSwap, amount);
+        
+        // Update reserves in SurfSwap
         ISurfSwap(surfSwap).addToWethReserve(amount);
 
         userWethDebt[msg.sender] = userWethStake[msg.sender] * accWavesPerWethShare / ACC_PRECISION;
