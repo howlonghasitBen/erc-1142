@@ -293,6 +293,107 @@ contract SurfSwap is ReentrancyGuard {
     }
 
     // ═══════════════════════════════════════════════════════════
+    //                    INTERNAL SWAP (STAKE SWAPPING)
+    // ═══════════════════════════════════════════════════════════
+
+    /// @notice Internal swap from one card to another without token transfers
+    /// @dev Only callable by WhirlpoolStaking for swapStake() operations
+    ///      This function performs a CARD → WAVES → CARD swap purely through reserve accounting.
+    ///      Key difference from regular swaps: we're swapping tokens ALREADY IN THE POOL (stakedCards).
+    ///      
+    ///      Approach:
+    ///      1. Remove cardAmountIn from fromCard's reserves (both cardReserve AND stakedCards)
+    ///      2. Calculate WAVES output using constant product on REDUCED reserves
+    ///      3. Calculate toCard output using constant product
+    ///      4. Add output to toCard's reserves (both cardReserve AND stakedCards)
+    ///      5. Charge 0.3% fee on each hop
+    ///      
+    ///      NO ERC20 TRANSFERS - pure accounting changes
+    /// @param fromCardId Source card identifier
+    /// @param toCardId Destination card identifier
+    /// @param cardAmountIn Amount of fromCard tokens to swap
+    /// @return cardAmountOut Amount of toCard tokens received
+    function internalSwapCardToCard(
+        uint256 fromCardId,
+        uint256 toCardId,
+        uint256 cardAmountIn
+    ) external nonReentrant returns (uint256 cardAmountOut) {
+        require(msg.sender == whirlpool, "Only Whirlpool");
+        require(fromCardId != toCardId, "Same card");
+        require(cardAmountIn > 0, "Zero amount");
+
+        CardPool storage fromPool = cards[fromCardId];
+        CardPool storage toPool = cards[toCardId];
+        require(fromPool.token != address(0), "From pool not initialized");
+        require(toPool.token != address(0), "To pool not initialized");
+        require(fromPool.cardReserve >= cardAmountIn, "Insufficient from reserve");
+        require(fromPool.stakedCards >= cardAmountIn, "Insufficient staked cards");
+
+        // ─── Step 1: Remove from fromCard reserves ──────────────
+        // These tokens are leaving the staked pool to be swapped
+        fromPool.cardReserve -= cardAmountIn;
+        fromPool.stakedCards -= cardAmountIn;
+
+        // ─── Step 2: Swap fromCard → WAVES (internal) ───────────
+        
+        // Take fee from input
+        uint256 fee1 = cardAmountIn * SWAP_FEE_BPS / BPS;
+        uint256 amountInAfterFee = cardAmountIn - fee1;
+
+        // Calculate WAVES output using constant product: (x + Δx)(y - Δy) = xy
+        // We're SELLING cards TO the pool (pool gains cards, loses WAVES)
+        uint256 newCardReserve = fromPool.cardReserve + amountInAfterFee;
+        uint256 grossWavesOut = fromPool.wavesReserve - (fromPool.cardReserve * fromPool.wavesReserve) / newCardReserve;
+        
+        // Take fee from WAVES output (double fee)
+        uint256 wavesFee1 = grossWavesOut * SWAP_FEE_BPS / BPS;
+        uint256 wavesOut = grossWavesOut - wavesFee1;
+
+        // Update fromCard reserves (add back cards + fee, remove WAVES)
+        fromPool.cardReserve = newCardReserve + fee1;
+        fromPool.wavesReserve -= grossWavesOut;
+
+        // Distribute fromCard fee
+        if (wavesFee1 > 0) {
+            IERC20(waves).safeTransfer(whirlpool, wavesFee1);
+            IWhirlpool(whirlpool).distributeSwapFees(fromCardId, wavesFee1);
+        }
+
+        // ─── Step 3: Swap WAVES → toCard (internal) ──────────────
+
+        // Take fee from WAVES input
+        uint256 fee2 = wavesOut * SWAP_FEE_BPS / BPS;
+        uint256 wavesInAfterFee = wavesOut - fee2;
+
+        // Calculate toCard output using constant product
+        // We're BUYING cards FROM the pool (pool gains WAVES, loses cards)
+        uint256 newToWavesReserve = toPool.wavesReserve + wavesInAfterFee;
+        cardAmountOut = toPool.cardReserve - (toPool.wavesReserve * toPool.cardReserve) / newToWavesReserve;
+
+        // Update toCard reserves (add WAVES, remove cards)
+        toPool.wavesReserve = newToWavesReserve;
+        toPool.cardReserve -= cardAmountOut;
+        
+        // Proportionally reduce toCard's staked portion (cards leaving pool)
+        if (toPool.stakedCards > 0 && toPool.cardReserve + cardAmountOut > 0) {
+            uint256 stakedReduction = cardAmountOut * toPool.stakedCards / (toPool.cardReserve + cardAmountOut);
+            if (stakedReduction > toPool.stakedCards) stakedReduction = toPool.stakedCards;
+            toPool.stakedCards -= stakedReduction;
+        }
+
+        // ─── Step 4: Add output to toCard reserves ──────────────
+        // These tokens are being staked in the destination card
+        toPool.stakedCards += cardAmountOut;
+        toPool.cardReserve += cardAmountOut;
+
+        // Distribute toCard fee
+        if (fee2 > 0) {
+            IERC20(waves).safeTransfer(whirlpool, fee2);
+            IWhirlpool(whirlpool).distributeSwapFees(toCardId, fee2);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //                    CARD RESERVE UPDATES (LP STAKING)
     // ═══════════════════════════════════════════════════════════
 

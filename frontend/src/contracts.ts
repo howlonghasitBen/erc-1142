@@ -3,12 +3,12 @@
 // Run: forge script script/WhirlpoolDeploy.s.sol --rpc-url http://192.168.0.82:8545 --broadcast
 // Then paste the logged addresses here.
 // ═══════════════════════════════════════════════════════════════
-export const WHIRLPOOL_ADDRESS = '0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0' as const;
-export const WAVES_ADDRESS     = '0x610178dA211FEF7D417bC0e6FeD39F05609AD788' as const;
-export const BIDNFT_ADDRESS    = '0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82' as const;
-export const WETH_ADDRESS      = '0x8A791620dd6260079BF849Dc5567aDC3F2FdC318' as const;
-export const SURFSWAP_ADDRESS  = '0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e' as const;
-export const ROUTER_ADDRESS    = '0x9A676e781A523b5d0C0e43731313A708CB607508' as const;
+export const WHIRLPOOL_ADDRESS = '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9' as const;
+export const WAVES_ADDRESS     = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512' as const;
+export const BIDNFT_ADDRESS    = '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9' as const;
+export const WETH_ADDRESS      = '0x5FbDB2315678afecb367f032d93F642f64180aa3' as const;
+export const SURFSWAP_ADDRESS  = '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0' as const;
+export const ROUTER_ADDRESS    = '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707' as const;
 
 // ═══════════════════════════════════════════════════════════════
 // ABIs

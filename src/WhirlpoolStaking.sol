@@ -252,6 +252,126 @@ contract WhirlpoolStaking is ReentrancyGuard {
         emit Unstaked(cardId, msg.sender, shares);
     }
 
+    /// @notice Swap staked position from one card to another atomically
+    /// @dev This is the key innovation: swap without unstaking/re-staking
+    ///      Process:
+    ///      1. Calculate card tokens represented by user's fromCard shares
+    ///      2. Harvest pending rewards (must do before changing shares)
+    ///      3. Burn user's fromCard shares
+    ///      4. Call SurfSwap.internalSwapCardToCard (pure reserve math, no token transfers)
+    ///      5. Mint new toCard shares based on output amount
+    ///      6. Update ownership for both cards
+    ///      7. Update global weight tracking
+    ///      
+    ///      Benefits:
+    ///      - Single transaction (vs 3 separate txns)
+    ///      - No token approvals needed
+    ///      - Lower gas cost
+    ///      - No slippage from token transfers
+    /// @param fromCardId Source card identifier
+    /// @param toCardId Destination card identifier  
+    /// @param shares Amount of fromCard shares to swap
+    function swapStake(
+        uint256 fromCardId,
+        uint256 toCardId,
+        uint256 shares
+    ) external nonReentrant {
+        require(shares > 0, "Zero shares");
+        require(fromCardId != toCardId, "Same card");
+        require(userCardShares[fromCardId][msg.sender] >= shares, "Insufficient shares");
+
+        CardStake storage fromCs = cardStakes[fromCardId];
+        CardStake storage toCs = cardStakes[toCardId];
+
+        // Harvest all pending rewards FIRST (before changing shares)
+        // Harvest fromCard rewards
+        if (userCardShares[fromCardId][msg.sender] > 0) {
+            uint256 pendingFrom = userCardShares[fromCardId][msg.sender] * fromCs.accWavesPerShare / ACC_PRECISION - userCardDebt[fromCardId][msg.sender];
+            if (pendingFrom > 0) {
+                IERC20(waves).safeTransfer(msg.sender, pendingFrom);
+            }
+        }
+
+        // Harvest toCard rewards (if user already has stake there)
+        if (userCardShares[toCardId][msg.sender] > 0) {
+            uint256 pendingTo = userCardShares[toCardId][msg.sender] * toCs.accWavesPerShare / ACC_PRECISION - userCardDebt[toCardId][msg.sender];
+            if (pendingTo > 0) {
+                IERC20(waves).safeTransfer(msg.sender, pendingTo);
+            }
+        }
+
+        // Harvest global rewards
+        _harvestGlobal(msg.sender);
+
+        // Calculate card amount represented by shares
+        uint256 stakedCards = ISurfSwap(surfSwap).getStakedCards(fromCardId);
+        uint256 cardAmountIn = shares * stakedCards / fromCs.totalShares;
+        require(cardAmountIn > 0, "Zero amount");
+
+        // Burn fromCard shares
+        userCardShares[fromCardId][msg.sender] -= shares;
+        fromCs.totalShares -= shares;
+
+        // Update global weight (remove fromCard weight)
+        userGlobalWeight[msg.sender] -= shares;
+        totalGlobalWeight -= shares;
+
+        // Perform internal swap (no token transfers, pure reserve math)
+        uint256 cardAmountOut = ISurfSwap(surfSwap).internalSwapCardToCard(
+            fromCardId,
+            toCardId,
+            cardAmountIn
+        );
+        require(cardAmountOut > 0, "Zero output");
+
+        // Calculate toCard shares to mint
+        uint256 sharesToMint;
+        if (toCs.totalShares == 0) {
+            // Bootstrap case: first staker gets 1:1
+            sharesToMint = cardAmountOut;
+        } else {
+            // Proportional shares based on new stakedCards amount
+            uint256 currentToStaked = ISurfSwap(surfSwap).getStakedCards(toCardId);
+            require(currentToStaked > 0, "No staked liquidity in target");
+            sharesToMint = cardAmountOut * toCs.totalShares / currentToStaked;
+        }
+        require(sharesToMint > 0, "Zero shares minted");
+
+        // Mint toCard shares
+        userCardShares[toCardId][msg.sender] += sharesToMint;
+        toCs.totalShares += sharesToMint;
+
+        // Update global weight (add toCard weight)
+        userGlobalWeight[msg.sender] += sharesToMint;
+        totalGlobalWeight += sharesToMint;
+
+        // Update debts for both cards
+        userCardDebt[fromCardId][msg.sender] = userCardShares[fromCardId][msg.sender] * fromCs.accWavesPerShare / ACC_PRECISION;
+        userCardDebt[toCardId][msg.sender] = userCardShares[toCardId][msg.sender] * toCs.accWavesPerShare / ACC_PRECISION;
+        userGlobalDebt[msg.sender] = userGlobalWeight[msg.sender] * accEthPerWeight / ACC_PRECISION;
+
+        // Update ownership for fromCard (check if user was owner)
+        address prevFromOwner = fromCs.currentOwner;
+        if (msg.sender == prevFromOwner) {
+            if (userCardShares[fromCardId][msg.sender] > 0) {
+                // User still has shares, update ownerShares
+                fromCs.ownerShares = userCardShares[fromCardId][msg.sender];
+            } else {
+                // User has no shares left, clear ownership
+                fromCs.currentOwner = address(0);
+                fromCs.ownerShares = 0;
+                emit OwnerChanged(fromCardId, prevFromOwner, address(0));
+            }
+        }
+
+        // Update ownership for toCard (user might become owner)
+        _updateOwnership(toCardId, msg.sender);
+
+        // Emit events
+        emit Unstaked(fromCardId, msg.sender, shares);
+        emit Staked(toCardId, msg.sender, sharesToMint);
+    }
+
     function claimRewards(uint256 cardId) external nonReentrant {
         CardStake storage cs = cardStakes[cardId];
         uint256 pending = userCardShares[cardId][msg.sender] * cs.accWavesPerShare / ACC_PRECISION - userCardDebt[cardId][msg.sender];

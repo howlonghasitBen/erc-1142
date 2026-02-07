@@ -15,4 +15,10 @@ interface ISurfSwap {
     function isCardToken(address token) external view returns (bool);
     function tokenToCard(address token) external view returns (uint256);
     function getStakedCards(uint256 cardId) external view returns (uint256);
+    
+    function internalSwapCardToCard(
+        uint256 fromCardId,
+        uint256 toCardId,
+        uint256 cardAmountIn
+    ) external returns (uint256 cardAmountOut);
 }
