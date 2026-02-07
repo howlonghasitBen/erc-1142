@@ -14,4 +14,5 @@ interface ISurfSwap {
     function getWethReserves() external view returns (uint256 wavesR, uint256 wethR);
     function isCardToken(address token) external view returns (bool);
     function tokenToCard(address token) external view returns (uint256);
+    function getStakedCards(uint256 cardId) external view returns (uint256);
 }

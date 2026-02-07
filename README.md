@@ -1,66 +1,251 @@
-## Foundry
+# Whirlpool AMM — ERC-1142 Bid-to-Own NFT System
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+⚠️ **UNDER REVIEW** — This project is currently under review. See [REVIEW.md](docs/REVIEW.md) for items requiring attention.
 
-Foundry consists of:
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Forge Tests](https://img.shields.io/badge/tests-26%2F26%20passing-brightgreen)]()
+[![Solidity](https://img.shields.io/badge/solidity-0.8.20-blue)]()
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+## Overview
 
-## Documentation
+Whirlpool is a custom AMM where **NFT ownership = biggest LP staker**. Staked tokens are tradeable (deposited as single-sided LP into the AMM), creating active defense dynamics where swaps erode your ownership position, forcing you to re-buy to maintain control.
 
-https://book.getfoundry.sh/
+### Key Innovation
 
-## Usage
+Unlike traditional NFT ownership systems, Whirlpool makes ownership **liquid and dynamic**:
+
+- **Stake to Own**: The address with the most LP shares owns the NFT
+- **Active Defense**: Swaps reduce your effective token count, eroding your ownership position
+- **Tradeable Staked Tokens**: Your staked tokens remain in the AMM pool and are traded against
+- **Economic Warfare**: Maintaining ownership requires continuous market participation
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    WhirlpoolRouter.sol                      │
+│              (Card Creation Orchestrator)                   │
+│                                                             │
+│  • Deploys CardToken (10M supply)                          │
+│  • Mints 2000 WAVES (500→AMM, 1500→minter)                │
+│  • Distributes: 75% AMM, 20% auto-staked, 5% protocol     │
+│  • Mints BidNFT                                             │
+└─────────────────────────────────────────────────────────────┘
+                    ↓                      ↓
+         ┌──────────────────┐    ┌──────────────────┐
+         │  SurfSwap.sol    │    │ WhirlpoolStaking │
+         │  (AMM Engine)    │←───│  .sol (LP + Fees)│
+         └──────────────────┘    └──────────────────┘
+         │                        │
+         │  Constant product      │  LP share-based
+         │  x * y = k             │  staking
+         │  Multi-route swaps     │  Ownership tracking
+         │  0.3% fees             │  MasterChef rewards
+         │  stakedCards tracking  │  WETH 1.5x boost
+         │                        │
+         └────────────────────────┘
+                    ↓
+         ┌──────────────────────┐
+         │     BidNFT.sol       │
+         │ (Dynamic Ownership)  │
+         │                      │
+         │  ownerOf() → Whirl   │
+         │  pool.ownerOfCard()  │
+         └──────────────────────┘
+
+Supporting Tokens:
+├─ WAVES.sol      — Hub token (10M max supply)
+├─ CardToken.sol  — Per-card ERC-20 (10M each)
+└─ WETH           — External (for exit liquidity)
+```
+
+## Key Mechanics
+
+### Card Creation
+
+When you create a card (cost: **0.05 ETH**):
+
+1. **CardToken deployed**: 10,000,000 tokens minted
+2. **WAVES minted**: 2,000 WAVES created
+   - 500 WAVES (25%) → AMM pool
+   - 1,500 WAVES (75%) → You (the minter)
+3. **Token distribution**:
+   - 7,500,000 (75%) → AMM pool
+   - 2,000,000 (20%) → Auto-staked for you
+   - 500,000 (5%) → Protocol treasury
+4. **You become owner**: Auto-staked tokens give you majority LP shares
+5. **NFT minted**: BidNFT dynamic ownership linked to your stake
+
+### Trading
+
+All swaps route through **WAVES** as the hub token:
+
+| Route | Path | Fee |
+|-------|------|-----|
+| CARD ↔ CARD | CARD → WAVES → CARD | 0.3% × 2 |
+| CARD ↔ WAVES | Direct | 0.3% |
+| CARD ↔ WETH | CARD → WAVES → WETH | 0.3% × 2 |
+| WAVES ↔ WETH | Direct | 0.3% |
+
+### LP Staking (Ownership System)
+
+**Staking = Single-sided liquidity provision**
+
+When you stake card tokens:
+
+1. Tokens deposited into AMM pool as single-sided LP
+2. You receive **LP shares** (first staker: 1:1, subsequent: proportional)
+3. Your tokens remain in the pool and are **tradeable by everyone**
+4. Swaps reduce the `stakedCards` portion, eroding your effective balance
+5. **Biggest shareholder** = NFT owner
+
+**Effective Balance Formula**:
+```solidity
+effectiveBalance = (userShares * stakedCards) / totalShares
+```
+
+Where `stakedCards` decreases when people buy from the pool.
+
+### Active Defense
+
+You must **actively defend** your ownership:
+
+1. Bob buys 1M card tokens → Pool's staked reserve shrinks
+2. Your shares stay the same, but effective balance drops
+3. Your ownership percentage decreases
+4. If another staker surpasses you → **NFT ownership transfers**
+
+### WETH Staking
+
+Stake WETH to earn **1.5x boosted rewards**:
+
+- Provides exit liquidity (WAVES ↔ WETH pool)
+- Earns swap fees from WETH routes
+- Gets 1.5x weight in global mint fee distribution
+- Doesn't grant NFT ownership
+
+### Fee Distribution
+
+| Fee Type | Source | Recipients |
+|----------|--------|------------|
+| Swap fees (CARD) | 0.3% of swaps | Card-specific stakers (MasterChef) |
+| Swap fees (WETH) | 0.3% of WETH swaps | WETH stakers (MasterChef) |
+| Mint fees | 0.05 ETH per card | All stakers (weighted by LP shares + WETH) |
+
+**MasterChef Pattern**: O(1) gas via accumulator:
+```solidity
+accRewardPerShare += newRewards / totalShares
+pendingReward = userShares * accRewardPerShare - userDebt
+```
+
+## Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `MAX_CARDS` | 5,000 | Maximum cards in system |
+| `MINT_FEE` | 0.05 ETH | Cost to create a card |
+| `CARD_SUPPLY` | 10,000,000 | Tokens per card |
+| `WAVES_PER_CARD` | 2,000 | WAVES minted per card |
+| `SWAP_FEE` | 0.3% | Swap fee (30 bps) |
+| `WETH_BOOST` | 1.5x | WETH staker reward multiplier |
+
+### Distribution Breakdown
+
+**WAVES** (2,000 per card):
+- 25% (500) → AMM pool
+- 75% (1,500) → Minter
+
+**CARD** (10M per card):
+- 75% (7.5M) → AMM pool
+- 20% (2M) → Minter (auto-staked)
+- 5% (500K) → Protocol
+
+## Immutability
+
+⚠️ **No admin. No proxy. No upgrades.**
+
+- All contracts immutable once deployed
+- Parameters hardcoded
+- No pause function
+- No emergency withdrawal
+- What you deploy is what you get forever
+
+## Quick Start
+
+### Local Development
+
+```bash
+# Launch Anvil + deploy contracts
+bash launch-dev.sh
+```
+
+This script:
+1. Starts Anvil (local EVM)
+2. Deploys all contracts
+3. Creates 2 example cards
+4. Prints contract addresses
+5. Opens demo frontend (optional)
+
+### Testing
+
+```bash
+forge test -vv
+```
+
+**Expected output**: `26/26 tests passing`
 
 ### Build
 
-```shell
-$ forge build
+```bash
+forge build
 ```
 
-### Test
+## Contract Sizes
 
-```shell
-$ forge test
-```
+All contracts fit within the EIP-170 limit (24,576 bytes):
 
-### Format
+| Contract | Size | Status |
+|----------|------|--------|
+| WhirlpoolRouter | ~19 KB | ✅ |
+| WhirlpoolStaking | ~23 KB | ⚠️ Near limit |
+| SurfSwap | ~22 KB | ⚠️ Uses --code-size-limit locally |
+| BidNFT | ~8 KB | ✅ |
+| WAVES | ~4 KB | ✅ |
+| CardToken | ~3 KB | ✅ |
 
-```shell
-$ forge fmt
-```
+⚠️ SurfSwap currently requires `--code-size-limit` flag in foundry.toml for local compilation. See [REVIEW.md](docs/REVIEW.md).
 
-### Gas Snapshots
+## Documentation
 
-```shell
-$ forge snapshot
-```
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — Detailed system architecture
+- [MECHANICS.md](docs/MECHANICS.md) — Deep dive into AMM math and LP mechanics
+- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — Deployment guide
+- [REVIEW.md](docs/REVIEW.md) — Items under review
 
-### Anvil
+## Security Considerations
 
-```shell
-$ anvil
-```
+⚠️ This is experimental software. Use at your own risk.
 
-### Deploy
+- **No audits** — Code is unaudited
+- **Complexity** — Novel ownership mechanics may have edge cases
+- **Immutability** — No bug fixes post-deployment
+- **Economic risk** — Ownership can be lost to better-funded attackers
 
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
+See [REVIEW.md](docs/REVIEW.md) for known issues and considerations.
 
-### Cast
+## License
 
-```shell
-$ cast <subcommand>
-```
+MIT License - see [LICENSE](LICENSE) file for details.
 
-### Help
+## Contributing
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+This project is currently **under review**. Contributions welcome after initial audit.
+
+## Credits
+
+- Built on [Foundry](https://getfoundry.sh/)
+- Uses [OpenZeppelin](https://openzeppelin.com/contracts/) contracts
+
+---
+
+**Remember**: With great power comes great gas costs. Defend your NFTs wisely. 🌊

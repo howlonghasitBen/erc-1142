@@ -374,6 +374,7 @@ contract WhirlpoolTest is Test {
         uint256 bought = surfSwap.swapExact(address(waves), ct, 100 ether, 0);
         
         (uint256 wavesR, uint256 cardR) = surfSwap.getReserves(0);
+        uint256 stakedCards = surfSwap.getStakedCards(0);
         uint256 totalSharesBefore = whirlpool.stakeOf(0, alice); // Only Alice has shares
         
         IERC20(ct).approve(address(whirlpool), type(uint256).max);
@@ -381,8 +382,8 @@ contract WhirlpoolTest is Test {
         vm.stopPrank();
         
         uint256 bobShares = whirlpool.stakeOf(0, bob);
-        // Bob should get: bought * totalShares / cardReserve
-        uint256 expectedShares = bought * totalSharesBefore / cardR;
+        // Bob should get: bought * totalShares / stakedCards (not cardR)
+        uint256 expectedShares = bought * totalSharesBefore / stakedCards;
         
         assertApproxEqAbs(bobShares, expectedShares, 1e18, "Bob should get proportional shares");
     }
@@ -458,7 +459,8 @@ contract WhirlpoolTest is Test {
         vm.prank(alice);
         router.createCard{value: 0.05 ether}("C1", "C1", "u1");
         uint256 price = surfSwap.getPrice(0);
-        assertEq(price, uint256(500 ether) * 1e18 / uint256(7_500_000 ether));
+        // Pool has 7.5M base + 2M staked = 9.5M total
+        assertEq(price, uint256(500 ether) * 1e18 / uint256(9_500_000 ether));
     }
 
     function testTotalCards() public {

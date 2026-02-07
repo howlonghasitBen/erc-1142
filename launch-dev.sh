@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════
+# ERC-1142 / Whirlpool AMM — Local Dev Launcher
+# Starts Anvil, deploys contracts, launches frontend
+# ═══════════════════════════════════════════════════
+set -e
+
+export PATH="$HOME/.foundry/bin:$PATH"
+PROJECT="$HOME/Projects/erc-1142"
+cd "$PROJECT"
+
+# Colors
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  ERC-1142 / Whirlpool AMM — Local Dev Suite${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
+echo ""
+
+# ─── Kill existing processes ───
+echo -e "${YELLOW}Cleaning up old processes...${NC}"
+pkill -f "anvil --host" 2>/dev/null || true
+pkill -f "vite.*erc-1142" 2>/dev/null || true
+sleep 1
+
+# ─── Run tests ───
+echo -e "${YELLOW}Running tests...${NC}"
+FORGE_OUT=$(forge test 2>&1)
+PASSED=$(echo "$FORGE_OUT" | grep -c "\[PASS\]" || true)
+FAILED=$(echo "$FORGE_OUT" | grep -c "\[FAIL" || true)
+
+if [ "$FAILED" -gt 0 ]; then
+    echo -e "${RED}Tests: ${PASSED} passed, ${FAILED} failed${NC}"
+    echo "$FORGE_OUT" | grep "\[FAIL" | while read -r line; do
+        echo -e "  ${RED}$line${NC}"
+    done
+    echo ""
+    echo -e "${YELLOW}Continuing with deployment anyway...${NC}"
+else
+    echo -e "${GREEN}Tests: ${PASSED} passed, 0 failed ✓${NC}"
+fi
+echo ""
+
+# ─── Start Anvil ───
+echo -e "${YELLOW}Starting Anvil (Chain 31337)...${NC}"
+anvil --host 0.0.0.0 --code-size-limit 50000 --gas-limit 30000000 \
+    > /tmp/anvil-erc1142.log 2>&1 &
+ANVIL_PID=$!
+echo -e "${GREEN}Anvil PID: ${ANVIL_PID}${NC}"
+sleep 2
+
+# Check Anvil started
+if ! kill -0 $ANVIL_PID 2>/dev/null; then
+    echo -e "${RED}Anvil failed to start! Check /tmp/anvil-erc1142.log${NC}"
+    exit 1
+fi
+
+# ─── Deploy Contracts ───
+echo -e "${YELLOW}Deploying contracts...${NC}"
+DEPLOY_OUT=$(forge script script/LocalDeploy.s.sol --tc LocalDeployScript \
+    --rpc-url http://127.0.0.1:8545 --broadcast --code-size-limit 50000 2>&1)
+
+if echo "$DEPLOY_OUT" | grep -q "ONCHAIN EXECUTION COMPLETE & SUCCESSFUL"; then
+    echo -e "${GREEN}Deployment successful ✓${NC}"
+else
+    echo -e "${RED}Deployment failed!${NC}"
+    echo "$DEPLOY_OUT" | tail -10
+    kill $ANVIL_PID 2>/dev/null
+    exit 1
+fi
+
+# Extract addresses
+echo ""
+echo -e "${CYAN}═══ Deployed Addresses ═══${NC}"
+echo "$DEPLOY_OUT" | grep -E "^\s+(WETH|WAVES|SurfSwap|Whirlpool|BidNFT|Router|Card)" | while read -r line; do
+    echo -e "  ${GREEN}$line${NC}"
+done
+
+# Update frontend contracts.ts with deployed addresses
+WETH=$(echo "$DEPLOY_OUT" | grep "WETH:" | head -1 | awk '{print $NF}')
+WAVES=$(echo "$DEPLOY_OUT" | grep "WAVES:" | head -1 | awk '{print $NF}')
+SURFSWAP=$(echo "$DEPLOY_OUT" | grep "SurfSwap:" | awk '{print $NF}')
+WHIRLPOOL=$(echo "$DEPLOY_OUT" | grep "Whirlpool:" | awk '{print $NF}')
+BIDNFT=$(echo "$DEPLOY_OUT" | grep "BidNFT:" | awk '{print $NF}')
+ROUTER=$(echo "$DEPLOY_OUT" | grep "Router:" | awk '{print $NF}')
+
+CONTRACTS_FILE="$PROJECT/frontend/src/contracts.ts"
+if [ -f "$CONTRACTS_FILE" ]; then
+    sed -i "s|WHIRLPOOL_ADDRESS = '0x[^']*'|WHIRLPOOL_ADDRESS = '${WHIRLPOOL}'|" "$CONTRACTS_FILE"
+    sed -i "s|WAVES_ADDRESS     = '0x[^']*'|WAVES_ADDRESS     = '${WAVES}'|" "$CONTRACTS_FILE"
+    sed -i "s|BIDNFT_ADDRESS    = '0x[^']*'|BIDNFT_ADDRESS    = '${BIDNFT}'|" "$CONTRACTS_FILE"
+    sed -i "s|WETH_ADDRESS      = '0x[^']*'|WETH_ADDRESS      = '${WETH}'|" "$CONTRACTS_FILE"
+    sed -i "s|SURFSWAP_ADDRESS  = '0x[^']*'|SURFSWAP_ADDRESS  = '${SURFSWAP}'|" "$CONTRACTS_FILE"
+    sed -i "s|ROUTER_ADDRESS    = '0x[^']*'|ROUTER_ADDRESS    = '${ROUTER}'|" "$CONTRACTS_FILE"
+    echo -e "${GREEN}Frontend contracts.ts updated ✓${NC}"
+fi
+
+# ─── Start Frontend ───
+echo ""
+echo -e "${YELLOW}Starting frontend...${NC}"
+cd "$PROJECT/frontend"
+npm run dev -- --host 0.0.0.0 > /tmp/vite-erc1142.log 2>&1 &
+VITE_PID=$!
+sleep 3
+
+# Detect port
+VITE_PORT=$(grep -oP 'localhost:\K[0-9]+' /tmp/vite-erc1142.log | head -1)
+if [ -z "$VITE_PORT" ]; then VITE_PORT="5173"; fi
+
+echo -e "${GREEN}Frontend PID: ${VITE_PID}${NC}"
+echo ""
+echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  🌊 Dev Suite Running!${NC}"
+echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
+echo ""
+echo -e "  ${GREEN}Frontend:${NC}  http://192.168.0.82:${VITE_PORT}/"
+echo -e "  ${GREEN}Anvil RPC:${NC} http://192.168.0.82:8545"
+echo -e "  ${GREEN}Chain ID:${NC}  31337"
+echo ""
+echo -e "  ${YELLOW}Test Accounts (10,000 ETH each):${NC}"
+echo -e "  #0: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+echo -e "      PK: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+echo -e "  #1: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+echo -e "      PK: 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+echo -e "  #2: 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+echo -e "      PK: 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+echo ""
+echo -e "  ${YELLOW}Logs:${NC}"
+echo -e "    Anvil: tail -f /tmp/anvil-erc1142.log"
+echo -e "    Vite:  tail -f /tmp/vite-erc1142.log"
+echo ""
+echo -e "  ${RED}Press Ctrl+C to stop everything${NC}"
+echo ""
+
+# ─── Trap cleanup ───
+cleanup() {
+    echo ""
+    echo -e "${YELLOW}Shutting down...${NC}"
+    kill $VITE_PID 2>/dev/null
+    kill $ANVIL_PID 2>/dev/null
+    echo -e "${GREEN}Done.${NC}"
+    exit 0
+}
+trap cleanup INT TERM
+
+# Wait for either process
+wait
