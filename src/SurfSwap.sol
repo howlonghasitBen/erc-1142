@@ -250,6 +250,11 @@ contract SurfSwap is ReentrancyGuard {
         }
     }
 
+    /// @notice Internal: Swap WETH → WAVES via constant product formula
+    /// @dev Double fee: 0.3% from input (WETH) and 0.3% from output (WAVES)
+    ///      Fees distributed to WETH stakers via WhirlpoolStaking.distributeWethSwapFees()
+    /// @param amountIn WETH being sold (input)
+    /// @return amountOut WAVES received (after fees)
     function _swapWethToWaves(uint256 amountIn) internal returns (uint256 amountOut) {
         require(wethReserve > 0 && wavesWethReserve > 0, "WETH pool not initialized");
 
@@ -273,6 +278,10 @@ contract SurfSwap is ReentrancyGuard {
         }
     }
 
+    /// @notice Internal: Swap WAVES → WETH via constant product formula
+    /// @dev Single fee: 0.3% from input (WAVES), distributed to WETH stakers
+    /// @param amountIn WAVES being sold (input)
+    /// @return amountOut WETH received (after fees)
     function _swapWavesToWeth(uint256 amountIn) internal returns (uint256 amountOut) {
         require(wethReserve > 0 && wavesWethReserve > 0, "WETH pool not initialized");
 
@@ -441,6 +450,9 @@ contract SurfSwap is ReentrancyGuard {
     //                    WETH RESERVE UPDATES
     // ═══════════════════════════════════════════════════════════
 
+    /// @notice Add WETH to the WETH ↔ WAVES pool reserve (called when user stakes WETH)
+    /// @dev Only WhirlpoolStaking can call. Bootstraps WAVES side if first deposit.
+    /// @param amount WETH being added to reserve
     function addToWethReserve(uint256 amount) external {
         require(msg.sender == whirlpool, "Only Whirlpool");
         wethReserve += amount;
@@ -450,6 +462,9 @@ contract SurfSwap is ReentrancyGuard {
         }
     }
 
+    /// @notice Remove WETH from the WETH ↔ WAVES pool reserve (called when user unstakes WETH)
+    /// @dev Only WhirlpoolStaking can call. Clamps to 0 to prevent underflow.
+    /// @param amount WETH being removed from reserve
     function removeFromWethReserve(uint256 amount) external {
         require(msg.sender == whirlpool, "Only Whirlpool");
         if (wethReserve >= amount) {

@@ -11,7 +11,11 @@ import "./interfaces/ISurfSwap.sol";
 import "./interfaces/IWhirlpool.sol";
 
 /// @title WhirlpoolRouter — Card creation orchestrator
-/// @notice Immutable. Entry point for creating new cards.
+/// @author Whirlpool Team
+/// @notice Immutable entry point for creating new cards. Deploys CardToken, mints WAVES,
+///         seeds AMM liquidity, auto-stakes minter's allocation, mints BidNFT, and distributes mint fees.
+/// @dev All card creation logic is in createCard(). No admin functions. No upgradability.
+///      Uses address prediction (CREATE opcode) to resolve circular dependencies at deployment.
 contract WhirlpoolRouter is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -66,6 +70,13 @@ contract WhirlpoolRouter is ReentrancyGuard {
     //                     CARD CREATION
     // ═══════════════════════════════════════════════════════════
 
+    /// @notice Create a new card: deploy token, seed AMM, auto-stake, mint NFT
+    /// @dev Full creation flow in 9 steps (see inline comments). Costs exactly MINT_FEE (0.05 ETH).
+    ///      Minter receives 1500 WAVES + 2M auto-staked tokens (becomes initial NFT owner).
+    /// @param name Card token name (e.g., "Fire Dragon")
+    /// @param symbol Card token symbol (e.g., "FDRAGON")
+    /// @param tokenURI Metadata URI for the BidNFT (e.g., IPFS hash)
+    /// @return cardId The unique identifier for the newly created card
     function createCard(
         string calldata name,
         string calldata symbol,
@@ -120,10 +131,15 @@ contract WhirlpoolRouter is ReentrancyGuard {
     //                       VIEWS
     // ═══════════════════════════════════════════════════════════
 
+    /// @notice Get total number of cards created
+    /// @return Total card count
     function totalCards() external view returns (uint256) {
         return totalCards_;
     }
 
+    /// @notice Get the ERC-20 token address for a given card
+    /// @param cardId Card identifier
+    /// @return Card token contract address
     function cardToken(uint256 cardId) external view returns (address) {
         return cardTokens[cardId];
     }

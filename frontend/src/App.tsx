@@ -1,11 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAccount, useConnect, useDisconnect, useWriteContract } from 'wagmi';
 import { injected } from 'wagmi/connectors';
-import { createPublicClient, createWalletClient, http, formatEther, parseEther, maxUint256 } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
+import { createPublicClient, http, formatEther, parseEther, maxUint256 } from 'viem';
 import {
-  WHIRLPOOL_ADDRESS, WAVES_ADDRESS, BIDNFT_ADDRESS, WETH_ADDRESS, SURFSWAP_ADDRESS, ROUTER_ADDRESS,
-  WHIRLPOOL_ABI, WAVES_ABI, CARD_TOKEN_ABI, BIDNFT_ABI, WETH_ABI, SURFSWAP_ABI, ROUTER_ABI,
+  WHIRLPOOL_ADDRESS, WAVES_ADDRESS, WETH_ADDRESS, SURFSWAP_ADDRESS, ROUTER_ADDRESS,
+  WHIRLPOOL_ABI, WAVES_ABI, CARD_TOKEN_ABI, WETH_ABI, SURFSWAP_ABI, ROUTER_ABI,
   TEST_ACCOUNTS,
 } from './contracts';
 import { anvilChain } from './wagmi-config';
@@ -66,10 +65,15 @@ function App() {
   const [swapIn, setSwapIn] = useState('waves');
   const [swapOut, setSwapOut] = useState('');
   const [swapAmount, setSwapAmount] = useState('');
+  const [swapSource, setSwapSource] = useState<'wallet' | 'staked'>('wallet');
+  const [swapInBalance, setSwapInBalance] = useState({ wallet: '0', staked: '0' });
   const [stakeCardId, setStakeCardId] = useState(0);
   const [stakeAmount, setStakeAmount] = useState('');
   const [wethStakeAmount, setWethStakeAmount] = useState('');
   const [wrapAmount, setWrapAmount] = useState('');
+  const [swapStakeFrom, setSwapStakeFrom] = useState(0);
+  const [swapStakeTo, setSwapStakeTo] = useState(0);
+  const [swapStakeAmount, setSwapStakeAmount] = useState('');
 
   // Balances
   const [wavesBalance, setWavesBalance] = useState('0');
@@ -94,7 +98,13 @@ function App() {
     }
   }, [logs, scrollLocked]);
 
-  // ─── Load cards dynamically from Whirlpool ───
+  /**
+   * Load all card data from on-chain contracts.
+   * Queries Router.totalCards() then iterates to fetch each card's token address,
+   * name, symbol, owner, price, reserves, and user-specific stake/balance.
+   * Also fetches user's WAVES, WETH, WETH stake, and pending global rewards.
+   * Called on mount, every 5s via interval, and after every transaction.
+   */
   const loadCards = useCallback(async () => {
     try {
       const totalBig = await publicClient.readContract({
@@ -165,7 +175,13 @@ function App() {
     }
   }, [address]);
 
-  // ─── Approve helper ───
+  /**
+   * Ensure ERC-20 approval for a spender. Checks current allowance and only
+   * sends an approve(maxUint256) transaction if allowance is insufficient.
+   * @param token - ERC-20 token address to approve
+   * @param spender - Address being approved to spend tokens
+   * @param amount - Minimum required allowance
+   */
   const ensureApproval = async (token: `0x${string}`, spender: `0x${string}`, amount: bigint) => {
     const allowance = await publicClient.readContract({
       address: token, abi: CARD_TOKEN_ABI, functionName: 'allowance', args: [address!, spender],
@@ -276,7 +292,66 @@ function App() {
     setLoading(false);
   };
 
-  // ─── Swap ───
+  /**
+   * SwapStake auto-detection and source toggle logic.
+   * When the swap input token changes, this effect:
+   * 1. Fetches both wallet balance and staked balance for the selected token
+   * 2. Auto-selects the swap source (wallet vs staked):
+   *    - If only staked balance exists → auto-select "staked" (triggers swapStake path)
+   *    - If only wallet balance exists → auto-select "wallet" (regular swap)
+   *    - If both exist → prefer "staked" (swapStake is more gas-efficient for card→card)
+   * 3. When source="staked" AND both in/out are cards, handleSwap() uses
+   *    WhirlpoolStaking.swapStake() instead of SurfSwap.swapExact()
+   */
+  useEffect(() => {
+    const updateSwapBalance = async () => {
+      if (!address || !swapIn) return;
+      
+      let walletBal = '0';
+      let stakedBal = '0';
+      
+      try {
+        if (swapIn === 'waves') {
+          walletBal = wavesBalance;
+        } else if (swapIn === 'weth') {
+          walletBal = wethBalance;
+        } else if (swapIn.startsWith('card-')) {
+          const cardIdx = parseInt(swapIn.replace('card-', ''));
+          const card = cards[cardIdx];
+          if (card) {
+            walletBal = card.myBalance;
+            stakedBal = card.myStake;
+          }
+        }
+        
+        setSwapInBalance({ wallet: walletBal, staked: stakedBal });
+        
+        // Auto-detect source
+        const hasWallet = Number(walletBal) > 0;
+        const hasStaked = Number(stakedBal) > 0;
+        
+        if (hasStaked && !hasWallet) {
+          setSwapSource('staked');
+        } else if (hasWallet && !hasStaked) {
+          setSwapSource('wallet');
+        } else if (hasStaked) {
+          setSwapSource('staked'); // Prefer staked if both exist
+        } else {
+          setSwapSource('wallet');
+        }
+      } catch (e) {
+        console.error('Error updating swap balance:', e);
+      }
+    };
+    
+    updateSwapBalance();
+  }, [swapIn, address, wavesBalance, wethBalance, cards]);
+
+  /**
+   * Resolve a UI token key (e.g., 'waves', 'weth', 'card-0') to its contract address.
+   * @param key - Token key from dropdown selection
+   * @returns Contract address as hex string
+   */
   const resolveToken = (key: string): `0x${string}` => {
     if (key === 'waves') return WAVES_ADDRESS;
     if (key === 'weth') return WETH_ADDRESS;
@@ -285,21 +360,83 @@ function App() {
     return cards[idx]?.address || ('0x0' as `0x${string}`);
   };
 
+  /**
+   * Execute a swap. Routes to either:
+   * - WhirlpoolStaking.swapStake() — when both in/out are cards AND source is "staked"
+   *   (atomic, no token transfers, pure reserve math, ~280K gas)
+   * - SurfSwap.swapExact() — for all other routes (wallet tokens, WAVES, WETH)
+   *   (standard AMM swap with token transfers)
+   *
+   * For swapStake, records pre/post state to show ownership changes in the log.
+   */
   const handleSwap = async () => {
     if (!isConnected || !swapAmount || !swapIn || !swapOut) return;
     setLoading(true);
     try {
-      const tokenIn = resolveToken(swapIn);
-      const tokenOut = resolveToken(swapOut);
+      const isCardIn = swapIn.startsWith('card-');
+      const isCardOut = swapOut.startsWith('card-');
       const amt = parseEther(swapAmount);
-      addLog(`Swapping ${swapAmount} ${swapIn} → ${swapOut}...`, 'info');
-      await ensureApproval(tokenIn, SURFSWAP_ADDRESS, amt);
-      const hash = await writeContractAsync({
-        address: SURFSWAP_ADDRESS, abi: SURFSWAP_ABI, functionName: 'swapExact',
-        args: [tokenIn, tokenOut, amt, BigInt(0)],
-      });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      addLog(`✓ Swap confirmed · block #${receipt.blockNumber} · gas ${receipt.gasUsed}`, 'success');
+      
+      // Check if we should use swapStake
+      if (isCardIn && isCardOut && swapSource === 'staked') {
+        const fromCardId = parseInt(swapIn.replace('card-', ''));
+        const toCardId = parseInt(swapOut.replace('card-', ''));
+        const fromCard = cards[fromCardId];
+        const toCard = cards[toCardId];
+        
+        addLog(`⚡ Using swapStake (staked tokens detected)...`, 'info');
+        addLog(`Swapping ${swapAmount} shares from ${fromCard.symbol} → ${toCard.symbol}...`, 'info');
+        
+        // Record pre-swap state
+        const [preFromStake, preToStake, preFromOwner, preToOwner] = await Promise.all([
+          publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'stakeOf', args: [BigInt(fromCardId), address!] }),
+          publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'stakeOf', args: [BigInt(toCardId), address!] }),
+          publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'ownerOfCard', args: [BigInt(fromCardId)] }),
+          publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'ownerOfCard', args: [BigInt(toCardId)] }),
+        ]);
+        
+        const hash = await writeContractAsync({
+          address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'swapStake',
+          args: [BigInt(fromCardId), BigInt(toCardId), amt],
+        });
+        
+        addLog(`TX submitted: ${hash}`, 'info', { hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        addLog(`⚡ SwapStake: ${swapAmount} shares from ${fromCard.symbol} → ${toCard.symbol} (atomic, no transfers)`, 'success', { hash });
+        addLog(`✓ Confirmed · block #${receipt.blockNumber} · gas ${receipt.gasUsed}`, 'success');
+        
+        // Post-swap details
+        const [postFromStake, postToStake, postFromOwner, postToOwner] = await Promise.all([
+          publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'stakeOf', args: [BigInt(fromCardId), address!] }),
+          publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'stakeOf', args: [BigInt(toCardId), address!] }),
+          publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'ownerOfCard', args: [BigInt(fromCardId)] }),
+          publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'ownerOfCard', args: [BigInt(toCardId)] }),
+        ]);
+        
+        addLog(`  ${fromCard.symbol}: ${formatEther(preFromStake as bigint)} → ${formatEther(postFromStake as bigint)} shares`, 'info');
+        addLog(`  ${toCard.symbol}: ${formatEther(preToStake as bigint)} → ${formatEther(postToStake as bigint)} shares`, 'info');
+        
+        if (preFromOwner !== postFromOwner) {
+          addLog(`  ${fromCard.symbol} ownership: ${addr(preFromOwner as string)} → ${addr(postFromOwner as string)}`, 'ownership', { category: 'ownership' });
+        }
+        if (preToOwner !== postToOwner) {
+          addLog(`  ${toCard.symbol} ownership: ${addr(preToOwner as string)} → ${addr(postToOwner as string)}`, 'ownership', { category: 'ownership' });
+        }
+      } else {
+        // Regular swap via SurfSwap
+        const tokenIn = resolveToken(swapIn);
+        const tokenOut = resolveToken(swapOut);
+        
+        addLog(`Swapping ${swapAmount} ${swapIn} → ${swapOut}...`, 'info');
+        await ensureApproval(tokenIn, SURFSWAP_ADDRESS, amt);
+        const hash = await writeContractAsync({
+          address: SURFSWAP_ADDRESS, abi: SURFSWAP_ABI, functionName: 'swapExact',
+          args: [tokenIn, tokenOut, amt, BigInt(0)],
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        addLog(`✓ Swap confirmed · block #${receipt.blockNumber} · gas ${receipt.gasUsed}`, 'success');
+      }
+      
       await loadCards();
     } catch (e: any) { addLog(`✗ Swap: ${e.shortMessage || e.message}`, 'error', { category: 'error' }); }
     setLoading(false);
@@ -355,6 +492,55 @@ function App() {
       addLog(`✓ Rewards claimed`, 'success');
       await loadCards();
     } catch (e: any) { addLog(`✗ Claim: ${e.shortMessage || e.message}`, 'error', { category: 'error' }); }
+    setLoading(false);
+  };
+
+  // ─── Swap Stake ───
+  const handleSwapStake = async () => {
+    if (!isConnected || !swapStakeAmount || swapStakeFrom === swapStakeTo) return;
+    setLoading(true);
+    const fromCard = cards[swapStakeFrom];
+    const toCard = cards[swapStakeTo];
+    try {
+      const amt = parseEther(swapStakeAmount);
+      addLog(`Swapping stake: ${swapStakeAmount} shares from ${fromCard.symbol} → ${toCard.symbol}...`, 'info');
+      
+      // Record pre-swap state
+      const [preFromStake, preToStake, preFromOwner, preToOwner] = await Promise.all([
+        publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'stakeOf', args: [BigInt(swapStakeFrom), address!] }),
+        publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'stakeOf', args: [BigInt(swapStakeTo), address!] }),
+        publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'ownerOfCard', args: [BigInt(swapStakeFrom)] }),
+        publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'ownerOfCard', args: [BigInt(swapStakeTo)] }),
+      ]);
+
+      const hash = await writeContractAsync({
+        address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'swapStake',
+        args: [BigInt(swapStakeFrom), BigInt(swapStakeTo), amt],
+      });
+      addLog(`TX submitted: ${hash}`, 'info', { hash });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      addLog(`✓ Swap stake confirmed · block #${receipt.blockNumber} · gas ${receipt.gasUsed}`, 'success', { hash });
+
+      // Post-swap details
+      const [postFromStake, postToStake, postFromOwner, postToOwner] = await Promise.all([
+        publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'stakeOf', args: [BigInt(swapStakeFrom), address!] }),
+        publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'stakeOf', args: [BigInt(swapStakeTo), address!] }),
+        publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'ownerOfCard', args: [BigInt(swapStakeFrom)] }),
+        publicClient.readContract({ address: WHIRLPOOL_ADDRESS, abi: WHIRLPOOL_ABI, functionName: 'ownerOfCard', args: [BigInt(swapStakeTo)] }),
+      ]);
+
+      addLog(`  ${fromCard.symbol}: ${formatEther(preFromStake as bigint)} → ${formatEther(postFromStake as bigint)} shares`, 'info');
+      addLog(`  ${toCard.symbol}: ${formatEther(preToStake as bigint)} → ${formatEther(postToStake as bigint)} shares`, 'info');
+      
+      if (preFromOwner !== postFromOwner) {
+        addLog(`  ${fromCard.symbol} ownership: ${addr(preFromOwner as string)} → ${addr(postFromOwner as string)}`, 'ownership', { category: 'ownership' });
+      }
+      if (preToOwner !== postToOwner) {
+        addLog(`  ${toCard.symbol} ownership: ${addr(preToOwner as string)} → ${addr(postToOwner as string)}`, 'ownership', { category: 'ownership' });
+      }
+
+      await loadCards();
+    } catch (e: any) { addLog(`✗ Swap stake: ${e.shortMessage || e.message}`, 'error', { category: 'error' }); }
     setLoading(false);
   };
 
@@ -656,7 +842,91 @@ function App() {
                         {tokenOptions.filter(t => t.key !== swapIn).map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
                       </select>
                     </div>
-                    <input type="number" value={swapAmount} onChange={e => setSwapAmount(e.target.value)} placeholder="Amount" style={{ marginTop: 4 }} />
+                    
+                    {/* Show balances for input token */}
+                    {swapIn && (
+                      <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: 4, paddingLeft: 4 }}>
+                        <div>Wallet: {Number(swapInBalance.wallet).toLocaleString()}</div>
+                        {swapIn.startsWith('card-') && Number(swapInBalance.staked) > 0 && (
+                          <div style={{ color: '#00ffaa', fontWeight: 500 }}>
+                            Staked: {Number(swapInBalance.staked).toLocaleString()} shares
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    
+                    {/* Source toggle for cards with both wallet and staked */}
+                    {swapIn.startsWith('card-') && (Number(swapInBalance.wallet) > 0 || Number(swapInBalance.staked) > 0) && (
+                      <div style={{ marginTop: 8, display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.85rem', opacity: 0.7 }}>Swap from:</span>
+                        <button 
+                          className={`preset-btn ${swapSource === 'wallet' ? 'active' : ''}`}
+                          onClick={() => setSwapSource('wallet')}
+                          style={{ 
+                            flex: 1,
+                            background: swapSource === 'wallet' ? 'rgba(0,255,170,0.15)' : 'rgba(255,255,255,0.05)',
+                            borderColor: swapSource === 'wallet' ? '#00ffaa' : 'rgba(255,255,255,0.1)'
+                          }}
+                        >
+                          Wallet
+                        </button>
+                        <button 
+                          className={`preset-btn ${swapSource === 'staked' ? 'active' : ''}`}
+                          onClick={() => setSwapSource('staked')}
+                          style={{ 
+                            flex: 1,
+                            background: swapSource === 'staked' ? 'rgba(0,255,170,0.15)' : 'rgba(255,255,255,0.05)',
+                            borderColor: swapSource === 'staked' ? '#00ffaa' : 'rgba(255,255,255,0.1)'
+                          }}
+                          disabled={Number(swapInBalance.staked) === 0}
+                        >
+                          Staked
+                        </button>
+                      </div>
+                    )}
+                    
+                    {/* Amount input with quick buttons */}
+                    <input 
+                      type="number" 
+                      value={swapAmount} 
+                      onChange={e => setSwapAmount(e.target.value)} 
+                      placeholder={swapSource === 'staked' ? 'Shares to swap' : 'Amount'} 
+                      style={{ marginTop: 8 }} 
+                    />
+                    <div className="quick-amounts" style={{ marginTop: 4 }}>
+                      <button onClick={() => {
+                        const bal = swapSource === 'staked' ? swapInBalance.staked : swapInBalance.wallet;
+                        setSwapAmount((Number(bal) * 0.25).toString());
+                      }}>25%</button>
+                      <button onClick={() => {
+                        const bal = swapSource === 'staked' ? swapInBalance.staked : swapInBalance.wallet;
+                        setSwapAmount((Number(bal) * 0.5).toString());
+                      }}>50%</button>
+                      <button onClick={() => {
+                        const bal = swapSource === 'staked' ? swapInBalance.staked : swapInBalance.wallet;
+                        setSwapAmount((Number(bal) * 0.75).toString());
+                      }}>75%</button>
+                      <button onClick={() => {
+                        const bal = swapSource === 'staked' ? swapInBalance.staked : swapInBalance.wallet;
+                        setSwapAmount(bal);
+                      }}>All</button>
+                    </div>
+                    
+                    {/* Atomic swap note */}
+                    {swapIn.startsWith('card-') && swapOut.startsWith('card-') && swapSource === 'staked' && (
+                      <div style={{ 
+                        marginTop: 8, 
+                        padding: '0.5rem', 
+                        background: 'rgba(0,255,170,0.05)', 
+                        border: '1px solid rgba(0,255,170,0.2)', 
+                        borderRadius: 4,
+                        fontSize: '0.75rem',
+                        color: '#00ffaa'
+                      }}>
+                        ⚡ Atomic swap — no tokens leave the pool
+                      </div>
+                    )}
+                    
                     <button className="btn-action" onClick={handleSwap} disabled={loading || !swapAmount || !swapOut} style={{ marginTop: 8 }}>
                       {loading ? 'Swapping…' : 'Swap'}
                     </button>
@@ -709,6 +979,43 @@ function App() {
                         Claim
                       </button>
                     </div>
+                  </div>
+
+                  <hr style={{ borderColor: 'rgba(255,255,255,0.1)', margin: '1rem 0' }} />
+
+                  {/* Swap Stake */}
+                  <div className="form-group">
+                    <label>🔄 Swap Stake (swap at market rate - 0.6% fees)</label>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <select value={swapStakeFrom} onChange={e => setSwapStakeFrom(Number(e.target.value))} style={{ flex: 1 }}>
+                        {cards.filter(c => address && Number(c.myStake) > 0).map(c => {
+                          const actualIdx = cards.indexOf(c);
+                          return <option key={actualIdx} value={actualIdx}>{c.name} ({c.symbol}) - {Number(c.myStake).toLocaleString()} shares</option>;
+                        })}
+                      </select>
+                      <span>→</span>
+                      <select value={swapStakeTo} onChange={e => setSwapStakeTo(Number(e.target.value))} style={{ flex: 1 }}>
+                        {cards.filter((_, i) => i !== swapStakeFrom).map(c => {
+                          const actualIdx = cards.indexOf(c);
+                          return <option key={actualIdx} value={actualIdx}>{c.name} ({c.symbol})</option>;
+                        })}
+                      </select>
+                    </div>
+                    {cards[swapStakeFrom] && (
+                      <div style={{ fontSize: '0.75rem', opacity: 0.7, marginTop: 4 }}>
+                        Your {cards[swapStakeFrom].symbol} stake: {Number(cards[swapStakeFrom].myStake).toLocaleString()} shares
+                      </div>
+                    )}
+                    <input type="number" value={swapStakeAmount} onChange={e => setSwapStakeAmount(e.target.value)} placeholder="Shares to swap" style={{ marginTop: 4 }} />
+                    <div className="quick-amounts" style={{ marginTop: 4 }}>
+                      <button onClick={() => cards[swapStakeFrom] && setSwapStakeAmount((Number(cards[swapStakeFrom].myStake) * 0.25).toString())}>25%</button>
+                      <button onClick={() => cards[swapStakeFrom] && setSwapStakeAmount((Number(cards[swapStakeFrom].myStake) * 0.5).toString())}>50%</button>
+                      <button onClick={() => cards[swapStakeFrom] && setSwapStakeAmount((Number(cards[swapStakeFrom].myStake) * 0.75).toString())}>75%</button>
+                      <button onClick={() => cards[swapStakeFrom] && setSwapStakeAmount(cards[swapStakeFrom].myStake)}>All</button>
+                    </div>
+                    <button className="btn-action" onClick={handleSwapStake} disabled={loading || !swapStakeAmount || swapStakeFrom === swapStakeTo} style={{ marginTop: 8 }}>
+                      {loading ? 'Swapping…' : 'Swap Stake'}
+                    </button>
                   </div>
                 </>)}
               </div>

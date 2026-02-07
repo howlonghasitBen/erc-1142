@@ -198,6 +198,12 @@ contract WhirlpoolStaking is ReentrancyGuard {
         emit Staked(cardId, user, amount);
     }
 
+    /// @notice Unstake LP shares and withdraw proportional card tokens
+    /// @dev Harvests pending card + global rewards before modifying shares.
+    ///      Withdrawal amount = shares × stakedCards / totalShares (proportional to current staked liquidity).
+    ///      If user was NFT owner and unstakes all shares, ownership clears to address(0).
+    /// @param cardId Card identifier
+    /// @param shares Number of LP shares to burn
     function unstake(uint256 cardId, uint256 shares) external nonReentrant {
         require(shares > 0, "Zero shares");
         require(userCardShares[cardId][msg.sender] >= shares, "Insufficient shares");
@@ -372,6 +378,9 @@ contract WhirlpoolStaking is ReentrancyGuard {
         emit Staked(toCardId, msg.sender, sharesToMint);
     }
 
+    /// @notice Claim pending WAVES rewards from card-specific swap fees and global mint fees
+    /// @dev Harvests both card accumulator and global (ETH) accumulator in one call
+    /// @param cardId Card identifier to claim swap fee rewards from
     function claimRewards(uint256 cardId) external nonReentrant {
         CardStake storage cs = cardStakes[cardId];
         uint256 pending = userCardShares[cardId][msg.sender] * cs.accWavesPerShare / ACC_PRECISION - userCardDebt[cardId][msg.sender];
@@ -390,6 +399,11 @@ contract WhirlpoolStaking is ReentrancyGuard {
     //                    WETH STAKING
     // ═══════════════════════════════════════════════════════════
 
+    /// @notice Stake WETH to earn swap fees and 1.5x boosted global mint fee rewards
+    /// @dev WETH is transferred to SurfSwap as virtual liquidity for the WAVES ↔ WETH pool.
+    ///      WETH stakers receive 1.5x weight in global mint fee distribution.
+    ///      Harvests any pending WETH + global rewards before modifying stake.
+    /// @param amount WETH to stake (must approve WhirlpoolStaking first)
     function stakeWETH(uint256 amount) external nonReentrant {
         require(amount > 0, "Zero amount");
 
@@ -427,6 +441,10 @@ contract WhirlpoolStaking is ReentrancyGuard {
         emit WETHStaked(msg.sender, amount);
     }
 
+    /// @notice Unstake WETH and withdraw from the WAVES ↔ WETH pool
+    /// @dev Harvests pending WETH swap + global rewards before modifying stake.
+    ///      Removes WETH from SurfSwap virtual reserve and transfers back to user.
+    /// @param amount WETH to unstake
     function unstakeWETH(uint256 amount) external nonReentrant {
         require(amount > 0, "Zero amount");
         require(userWethStake[msg.sender] >= amount, "Insufficient stake");
@@ -458,6 +476,8 @@ contract WhirlpoolStaking is ReentrancyGuard {
         emit WETHUnstaked(msg.sender, amount);
     }
 
+    /// @notice Claim pending WAVES rewards from WETH swap fees and global mint fees
+    /// @dev Harvests both WETH swap fee accumulator and global (ETH) accumulator
     function claimWETHRewards() external nonReentrant {
         uint256 pending = userWethStake[msg.sender] * accWavesPerWethShare / ACC_PRECISION - userWethDebt[msg.sender];
         if (pending > 0) {
@@ -475,6 +495,9 @@ contract WhirlpoolStaking is ReentrancyGuard {
     //                    FEE DISTRIBUTION
     // ═══════════════════════════════════════════════════════════
 
+    /// @notice Distribute ETH mint fee to all stakers (card LP + WETH) weighted by global weight
+    /// @dev Only callable by Router during card creation. Uses MasterChef accumulator pattern.
+    ///      Weight = card LP shares (1x) + WETH staked (1.5x)
     function distributeMintFee() external payable {
         require(msg.sender == router, "Only router");
         if (totalGlobalWeight > 0) {
@@ -482,6 +505,10 @@ contract WhirlpoolStaking is ReentrancyGuard {
         }
     }
 
+    /// @notice Distribute WAVES swap fees to card-specific LP stakers
+    /// @dev Only callable by SurfSwap during swaps. Increments per-share accumulator.
+    /// @param cardId Card identifier whose stakers receive the fee
+    /// @param wavesFee WAVES fee amount to distribute
     function distributeSwapFees(uint256 cardId, uint256 wavesFee) external {
         require(msg.sender == surfSwap, "Only SurfSwap");
         CardStake storage cs = cardStakes[cardId];
@@ -490,6 +517,9 @@ contract WhirlpoolStaking is ReentrancyGuard {
         }
     }
 
+    /// @notice Distribute WAVES swap fees to WETH stakers
+    /// @dev Only callable by SurfSwap during WETH ↔ WAVES swaps
+    /// @param wavesFee WAVES fee amount to distribute
     function distributeWethSwapFees(uint256 wavesFee) external {
         require(msg.sender == surfSwap, "Only SurfSwap");
         if (totalWethStaked > 0 && wavesFee > 0) {
@@ -501,6 +531,9 @@ contract WhirlpoolStaking is ReentrancyGuard {
     //                    INTERNAL
     // ═══════════════════════════════════════════════════════════
 
+    /// @notice Harvest pending ETH from global mint fee distribution
+    /// @dev Calculates pending = weight × accEthPerWeight - debt, sends ETH via low-level call
+    /// @param user Address to harvest for
     function _harvestGlobal(address user) internal {
         if (userGlobalWeight[user] > 0) {
             uint256 pending = userGlobalWeight[user] * accEthPerWeight / ACC_PRECISION - userGlobalDebt[user];
@@ -550,16 +583,27 @@ contract WhirlpoolStaking is ReentrancyGuard {
     //                       VIEWS
     // ═══════════════════════════════════════════════════════════
 
+    /// @notice Get the current NFT owner (biggest LP shareholder) for a card
+    /// @param cardId Card identifier
+    /// @return Address of current owner (address(0) if no stakers)
     function ownerOfCard(uint256 cardId) external view returns (address) {
         return cardStakes[cardId].currentOwner;
     }
 
     /// @notice Returns user's LP shares for a card
+    /// @param cardId Card identifier
+    /// @param user Address to query
+    /// @return Number of LP shares held by user
     function stakeOf(uint256 cardId, address user) external view returns (uint256) {
         return userCardShares[cardId][user];
     }
 
     /// @notice Returns the actual card token amount represented by user's shares
+    /// @dev effectiveBalance = userShares × stakedCards / totalShares
+    ///      This value fluctuates as swaps affect stakedCards
+    /// @param cardId Card identifier
+    /// @param user Address to query
+    /// @return Token amount (may be less than originally staked due to swap erosion)
     function effectiveBalance(uint256 cardId, address user) external view returns (uint256) {
         uint256 shares = userCardShares[cardId][user];
         if (shares == 0) return 0;
@@ -571,12 +615,19 @@ contract WhirlpoolStaking is ReentrancyGuard {
         return shares * stakedCards / cs.totalShares;
     }
 
+    /// @notice Get pending WAVES rewards from card-specific swap fees
+    /// @param cardId Card identifier
+    /// @param user Address to query
+    /// @return Pending WAVES reward amount (claimable via claimRewards)
     function pendingRewards(uint256 cardId, address user) external view returns (uint256) {
         CardStake storage cs = cardStakes[cardId];
         if (userCardShares[cardId][user] == 0) return 0;
         return userCardShares[cardId][user] * cs.accWavesPerShare / ACC_PRECISION - userCardDebt[cardId][user];
     }
 
+    /// @notice Get pending ETH rewards from global mint fee distribution
+    /// @param user Address to query
+    /// @return Pending ETH reward amount (claimable via claimRewards or claimWETHRewards)
     function pendingGlobalRewards(address user) external view returns (uint256) {
         if (userGlobalWeight[user] == 0) return 0;
         return userGlobalWeight[user] * accEthPerWeight / ACC_PRECISION - userGlobalDebt[user];

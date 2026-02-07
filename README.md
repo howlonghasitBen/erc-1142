@@ -3,7 +3,7 @@
 ⚠️ **UNDER REVIEW** — This project is currently under review. See [REVIEW.md](docs/REVIEW.md) for items requiring attention.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Forge Tests](https://img.shields.io/badge/tests-26%2F26%20passing-brightgreen)]()
+[![Forge Tests](https://img.shields.io/badge/tests-45%2F45%20passing-brightgreen)]()
 [![Solidity](https://img.shields.io/badge/solidity-0.8.20-blue)]()
 
 ## Overview
@@ -115,6 +115,20 @@ You must **actively defend** your ownership:
 3. Your ownership percentage decreases
 4. If another staker surpasses you → **NFT ownership transfers**
 
+### SwapStake (Atomic Position Swap)
+
+Move your staked position from one card to another in a single transaction:
+
+- **No unstake/re-stake needed** — atomic CARD_A → WAVES → CARD_B via reserve math
+- **No token transfers** — pure accounting changes in SurfSwap reserves
+- **Lower gas** — ~280K gas vs ~580K for separate unstake + swap + stake
+- **0.6% fee** — double hop through WAVES (0.3% × 2)
+- **Ownership updates** — both source and destination cards checked for ownership change
+
+```solidity
+whirlpool.swapStake(fromCardId, toCardId, sharesToSwap);
+```
+
 ### WETH Staking
 
 Stake WETH to earn **1.5x boosted rewards**:
@@ -192,7 +206,7 @@ This script:
 forge test -vv
 ```
 
-**Expected output**: `26/26 tests passing`
+**Expected output**: `45/45 tests passing`
 
 ### Build
 
