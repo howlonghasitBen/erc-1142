@@ -1,0 +1,157 @@
+/* ═══════════════════════════════════════════════════════════════
+ * Whirlpool Marketplace — Global Styles
+ * 
+ * Theme: Sunset/Ocean (warm oranges + cool cyans on dark background)
+ * Fonts: Space Grotesk (UI text) + JetBrains Mono (numeric/code values)
+ * ═══════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Design Tokens ─────────────────────────────────────────── */
+/* All colors are CSS custom properties for easy theme swapping.
+ * Naming convention: --category-variant (e.g., --bg-primary, --text-muted)
+ */
+:root {
+  /* Backgrounds — dark warm tones (slight brown/amber undertone) */
+  --bg-primary: #0f0d0a;
+  --bg-secondary: #1a1714;
+  --bg-card: #1e1b16;
+  --bg-hover: #252118;
+
+  /* Borders — subtle warm grays */
+  --border: #2a2520;
+  --border-bright: #3d3530;
+
+  /* Text — warm off-whites to muted earth tones */
+  --text-primary: #f5f0e8;
+  --text-secondary: #a89e8c;
+  --text-muted: #6b6155;
+
+  /* Accent: Sunset (orange → gold) — used for primary actions, active states */
+  --sunset-orange: #f97316;
+  --sunset-gold: #d97706;
+
+  /* Accent: Ocean (blue → cyan) — used for secondary accents, WAVES values */
+  --ocean-blue: #0891b2;
+  --ocean-cyan: #22d3ee;
+}
+
+/* ─── Reset & Base ──────────────────────────────────────────── */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-family: 'Space Grotesk', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+body {
+  min-height: 100vh;
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Custom Scrollbar ──────────────────────────────────────── */
+/* Thin scrollbar matching the dark theme */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ─── Card Grid Layout ──────────────────────────────────────── */
+/* Responsive grid: auto-fills columns at min 260px, max 1fr.
+ * Used by Marketplace and Portfolio pages for the card listing. */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1.25rem;
+  width: 100%;
+}
+
+/* ─── Gradient Text ─────────────────────────────────────────── */
+/* Sunset-to-ocean gradient used for the "WHIRLPOOL" logo text */
+.gradient-text {
+  background: linear-gradient(135deg, var(--sunset-orange), var(--ocean-cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ─── Card Gradient Backgrounds ─────────────────────────────── */
+/* Pre-defined gradients for card headers, cycled by card ID.
+ * These are also defined in Card.tsx as inline styles, but available
+ * as utility classes if needed elsewhere. */
+.card-gradient-1 { background: linear-gradient(135deg, #f97316, #d97706); }
+.card-gradient-2 { background: linear-gradient(135deg, #0891b2, #22d3ee); }
+.card-gradient-3 { background: linear-gradient(135deg, #8b5cf6, #a78bfa); }
+.card-gradient-4 { background: linear-gradient(135deg, #ec4899, #f472b6); }
+.card-gradient-5 { background: linear-gradient(135deg, #10b981, #34d399); }
+.card-gradient-6 { background: linear-gradient(135deg, #f59e0b, #fbbf24); }
+.card-gradient-7 { background: linear-gradient(135deg, #ef4444, #f87171); }
+.card-gradient-8 { background: linear-gradient(135deg, #6366f1, #818cf8); }
+
+/* ─── Card Hover Effect ─────────────────────────────────────── */
+/* Lift + dual-glow on hover: warm orange shadow + cool cyan ambient */
+.card-hover-glow {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover-glow:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 30px rgba(249, 115, 22, 0.15), 0 0 60px rgba(8, 145, 178, 0.08);
+}
+
+/* ─── Button: Primary ───────────────────────────────────────── */
+/* Sunset gradient button for main CTAs (Connect Wallet, Swap Stake, Create) */
+.btn-primary {
+  background: linear-gradient(135deg, var(--sunset-orange), var(--sunset-gold));
+  color: white;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+/* ─── Button: Secondary ─────────────────────────────────────── */
+/* Subtle bordered button for filters, sort options, percentage selectors.
+ * `.active` variant highlights with sunset-orange border and tint. */
+.btn-secondary {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-weight: 500;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-secondary:hover { background: var(--border); border-color: var(--border-bright); }
+.btn-secondary.active { border-color: var(--sunset-orange); background: rgba(249, 115, 22, 0.1); color: var(--sunset-orange); }
+
+/* ─── Form Controls ─────────────────────────────────────────── */
+/* Shared styles for input and select elements.
+ * Dark background, warm border, sunset-orange focus ring. */
+input, select {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+input:focus, select:focus { border-color: var(--sunset-orange); }
+input::placeholder { color: var(--text-muted); }

@@ -229,6 +229,38 @@ All contracts fit within the EIP-170 limit (24,576 bytes):
 
 ⚠️ SurfSwap currently requires `--code-size-limit` flag in foundry.toml for local compilation. See [REVIEW.md](docs/REVIEW.md).
 
+## Marketplace Frontend
+
+An OpenSea-style web UI for browsing, creating, and managing Whirlpool cards.
+
+<!-- TODO: Add screenshot -->
+![Marketplace Screenshot](docs/marketplace-screenshot.png)
+
+### Features
+- Browse all cards in a responsive grid with sort/filter
+- **SwapStake UI** — atomic position swaps between cards with percentage controls
+- **Portfolio** — view your staked/owned cards and pending rewards
+- **Create** — mint new cards with name, symbol, and IPFS metadata
+
+### Tech Stack
+- React 18 + TypeScript + Vite
+- wagmi v2 + viem (wallet + contract interactions)
+- Framer Motion (animations)
+- Tailwind CSS + CSS custom properties (sunset/ocean theme)
+- Space Grotesk + JetBrains Mono fonts
+
+### Quick Start
+
+```bash
+cd marketplace
+npm install
+npm run dev
+```
+
+Requires a running Anvil instance with deployed contracts (see `launch-dev.sh`).
+
+See [marketplace/OPENSEA-COMPARISON.md](marketplace/OPENSEA-COMPARISON.md) for feature parity analysis vs OpenSea.
+
 ## Documentation
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — Detailed system architecture
