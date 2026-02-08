@@ -1,32 +1,3 @@
-/**
- * @module Sidebar
- * @description Desktop filter and sort panel for the Marketplace page.
- *
- * Renders a fixed-width (200px) aside with two sections:
- * 1. **Filters** — Toggle buttons for "Staked Only" and "Owned by Me"
- * 2. **Sort By** — Exclusive selection buttons for sort order
- *
- * This component is purely presentational — all state is owned by the
- * parent Marketplace component and passed in via props. This keeps the
- * sidebar stateless and easy to hide on mobile (where inline controls
- * replace it).
- *
- * Hidden on mobile via the parent's `className="hidden lg:block"` wrapper.
- *
- * @see Marketplace for state management and how these props are used
- */
-
-/**
- * Props for the Sidebar component.
- * All state is controlled by the parent Marketplace component.
- *
- * @property sortBy - Current sort key ('id' | 'price-asc' | 'price-desc' | 'name')
- * @property setSortBy - Callback to change sort order
- * @property filterStaked - Whether "Staked Only" filter is active
- * @property setFilterStaked - Toggle staked filter
- * @property filterOwned - Whether "Owned by Me" filter is active
- * @property setFilterOwned - Toggle owned filter
- */
 interface SidebarProps {
   sortBy: string
   setSortBy: (s: string) => void
@@ -46,34 +17,30 @@ export default function Sidebar({ sortBy, setSortBy, filterStaked, setFilterStak
       gap: '20px',
       padding: '0 16px 0 0',
     }}>
-      {/* ═══ Filter Section ═══ */}
       <div>
-        <h3 style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-muted)', marginBottom: '10px' }}>
+        <h3 style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-muted)', marginBottom: '10px', fontFamily: "'Inter Tight', sans-serif" }}>
           Filters
         </h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {/* Toggle: show only cards where user has LP shares */}
           <button
             className={`btn-secondary ${filterStaked ? 'active' : ''}`}
             onClick={() => setFilterStaked(!filterStaked)}
-            style={{ fontSize: '13px', textAlign: 'left' }}
+            style={{ fontSize: '13px', textAlign: 'left', borderRadius: '10px' }}
           >
             🔒 Staked Only
           </button>
-          {/* Toggle: show only cards where user is the NFT owner */}
           <button
             className={`btn-secondary ${filterOwned ? 'active' : ''}`}
             onClick={() => setFilterOwned(!filterOwned)}
-            style={{ fontSize: '13px', textAlign: 'left' }}
+            style={{ fontSize: '13px', textAlign: 'left', borderRadius: '10px' }}
           >
             👤 Owned by Me
           </button>
         </div>
       </div>
 
-      {/* ═══ Sort Section ═══ */}
       <div>
-        <h3 style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-muted)', marginBottom: '10px' }}>
+        <h3 style={{ fontSize: '11px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px', color: 'var(--text-muted)', marginBottom: '10px', fontFamily: "'Inter Tight', sans-serif" }}>
           Sort By
         </h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -87,7 +54,7 @@ export default function Sidebar({ sortBy, setSortBy, filterStaked, setFilterStak
               key={s.key}
               className={`btn-secondary ${sortBy === s.key ? 'active' : ''}`}
               onClick={() => setSortBy(s.key)}
-              style={{ fontSize: '13px', textAlign: 'left' }}
+              style={{ fontSize: '13px', textAlign: 'left', borderRadius: '10px' }}
             >
               {s.label}
             </button>

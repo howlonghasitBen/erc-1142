@@ -1,35 +1,3 @@
-/**
- * @module App
- * @description Root application component for the Whirlpool NFT Marketplace.
- *
- * Provides top-level page routing between three views:
- * - **Explore** — Browse and interact with all Whirlpool cards (Marketplace)
- * - **Portfolio** — View your staked/owned cards and pending rewards
- * - **Create** — Mint new cards into the Whirlpool system
- *
- * Also manages a global toast notification system that child components
- * can trigger via the `onToast` callback prop.
- *
- * Layout structure:
- * ```
- * ┌─────────────────────────────┐
- * │  Header (fixed, z-50)       │
- * ├─────────────────────────────┤
- * │  Nav Tabs (sticky, z-40)    │
- * ├─────────────────────────────┤
- * │  Page Content (animated)    │
- * │  ┌─────────────────────┐    │
- * │  │ Marketplace / Port- │    │
- * │  │ folio / MintCard    │    │
- * │  └─────────────────────┘    │
- * └─────────────────────────────┘
- * Toast (fixed bottom-right)
- * ```
- *
- * Uses Framer Motion `AnimatePresence` for smooth page transitions
- * with a fade+slide animation (opacity + translateY).
- */
-
 import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Header from './components/Header'
@@ -38,28 +6,16 @@ import Portfolio from './components/Portfolio'
 import MintCard from './components/MintCard'
 import Toast from './components/Toast'
 
-/** Union type for the three navigable pages in the app. */
 type Page = 'explore' | 'portfolio' | 'create'
 
 export default function App() {
-  /** Currently active page tab. */
   const [page, setPage] = useState<Page>('explore')
-
-  /**
-   * Global toast state. Components call `onToast(message, type)` to show
-   * a notification; it auto-dismisses after 4 seconds (handled by Toast).
-   */
   const [toast, setToast] = useState({ message: '', type: 'info' as 'success' | 'error' | 'info', visible: false })
 
-  /**
-   * Memoized toast trigger — passed down to Marketplace, Portfolio, and MintCard
-   * so they can surface transaction results and validation errors to the user.
-   */
   const onToast = useCallback((message: string, type: 'success' | 'error' | 'info') => {
     setToast({ message, type, visible: true })
   }, [])
 
-  /** Tab configuration: key maps to Page type, icon is emoji prefix. */
   const tabs: { key: Page; label: string; icon: string }[] = [
     { key: 'explore', label: 'Explore', icon: '🔍' },
     { key: 'portfolio', label: 'Portfolio', icon: '💼' },
@@ -69,11 +25,9 @@ export default function App() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
       <Header />
-
-      {/* Spacer to offset the fixed-position header (64px tall) */}
       <div style={{ height: '64px' }} />
 
-      {/* Navigation tabs — sticky below header so they remain visible on scroll */}
+      {/* Navigation tabs */}
       <nav style={{
         display: 'flex',
         flexDirection: 'row',
@@ -92,15 +46,15 @@ export default function App() {
             onClick={() => setPage(t.key)}
             style={{
               padding: '8px 20px',
-              borderRadius: '8px',
+              borderRadius: '12px',
               border: 'none',
-              background: page === t.key ? 'rgba(249, 115, 22, 0.12)' : 'transparent',
-              color: page === t.key ? 'var(--sunset-orange)' : 'var(--text-secondary)',
+              background: page === t.key ? 'rgba(139, 92, 246, 0.08)' : 'transparent',
+              color: page === t.key ? '#8b5cf6' : 'var(--text-secondary)',
               fontWeight: page === t.key ? 600 : 400,
               fontSize: '14px',
               cursor: 'pointer',
               transition: 'all 0.15s',
-              fontFamily: "'Space Grotesk', sans-serif",
+              fontFamily: "'Inter Tight', sans-serif",
             }}
           >
             {t.icon} {t.label}
@@ -108,12 +62,7 @@ export default function App() {
         ))}
       </nav>
 
-      {/* Page content — max-width container with animated transitions */}
-      <main style={{
-        maxWidth: '1400px',
-        margin: '0 auto',
-        padding: '24px',
-      }}>
+      <main style={{ maxWidth: '1400px', margin: '0 auto', padding: '24px' }}>
         <AnimatePresence mode="wait">
           <motion.div
             key={page}
@@ -129,7 +78,6 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* Global toast notification — fixed bottom-right overlay */}
       <Toast
         message={toast.message}
         type={toast.type}

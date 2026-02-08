@@ -8,11 +8,17 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Space Grotesk', 'sans-serif'],
-        mono: ['JetBrains Mono', 'monospace'],
+        sans: ['Inter', 'sans-serif'],
+        heading: ['Inter Tight', 'Inter', 'sans-serif'],
+        mono: ['DM Mono', 'monospace'],
       },
       colors: {
         border: 'var(--border)',
+        violet: {
+          300: '#a78bfa',
+          400: '#8b5cf6',
+          500: '#7c3aed',
+        },
       },
     },
   },
