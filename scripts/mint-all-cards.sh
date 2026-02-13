@@ -34,7 +34,11 @@ for f in "$IMG_DIR"/*.png; do
   fi
   symbol="${symbol:0:8}"
 
-  uri="/images/card-images/$fname"
+  metadata_json=$(cat <<EOF
+{"name":"$raw","description":"A Whirlpool card","image":"/images/card-images/$fname","external_url":"https://howlonghasitben.github.io/cog-works/","attributes":[{"trait_type":"Type","value":"Creature"},{"trait_type":"Rarity","value":"Common"}]}
+EOF
+)
+  uri="data:application/json;base64,$(echo -n "$metadata_json" | base64 -w0)"
 
   echo "[$COUNT/$TOTAL] Creating $raw ($symbol)..."
   cast send "$ROUTER" "createCard(string,string,string)" "$raw" "$symbol" "$uri" \
