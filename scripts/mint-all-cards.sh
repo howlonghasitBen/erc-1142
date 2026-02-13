@@ -15,6 +15,9 @@ COUNT=0
 MINTED=0
 
 for f in "$IMG_DIR"/*.png; do
+  # Skip IPFS hash filenames (not real card names)
+  bname=$(basename "$f")
+  [[ "$bname" =~ ^baf ]] && continue
   COUNT=$((COUNT + 1))
   fname=$(basename "$f")
   # Extract name: remove leading numbers + underscore, strip .png, replace _ with space
