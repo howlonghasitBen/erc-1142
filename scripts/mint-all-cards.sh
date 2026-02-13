@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Mint a card for every image in cog-works/public/images/card-images/
+# Stores ERC-721 metadata as data:application/json;base64 URI on-chain
 set -e
 export PATH="$HOME/.foundry/bin:$PATH"
 
@@ -34,11 +35,12 @@ for f in "$IMG_DIR"/*.png; do
   fi
   symbol="${symbol:0:8}"
 
-  metadata_json=$(cat <<EOF
+  # Build ERC-721 metadata JSON
+  metadata=$(cat <<EOF
 {"name":"$raw","description":"A Whirlpool card","image":"/images/card-images/$fname","external_url":"https://howlonghasitben.github.io/cog-works/","attributes":[{"trait_type":"Type","value":"Creature"},{"trait_type":"Rarity","value":"Common"}]}
 EOF
-)
-  uri="data:application/json;base64,$(echo -n "$metadata_json" | base64 -w0)"
+  )
+  uri="data:application/json;base64,$(echo -n "$metadata" | base64 -w0)"
 
   echo "[$COUNT/$TOTAL] Creating $raw ($symbol)..."
   cast send "$ROUTER" "createCard(string,string,string)" "$raw" "$symbol" "$uri" \
