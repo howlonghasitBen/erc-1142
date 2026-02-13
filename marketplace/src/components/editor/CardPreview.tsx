@@ -30,6 +30,24 @@ export default function CardPreview({ card }: CardPreviewProps) {
           }}
         >
           <div>
+            {/* Stat orbs */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+              {[
+                { value: card.stats?.hp || 0, color: '#dc2626', shadow: '#991b1b' },
+                { value: card.stats?.mana || 0, color: '#2563eb', shadow: '#1e40af' },
+                { value: card.stats?.crit || 0, color: '#d97706', shadow: '#92400e' },
+              ].map((orb, i) => (
+                <div key={i} style={{
+                  width: 24, height: 24, borderRadius: '50%',
+                  background: `radial-gradient(circle at 35% 35%, ${orb.color}, ${orb.shadow})`,
+                  border: '2px solid #1a1a1a',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.4), inset 0 -1px 2px rgba(0,0,0,0.3)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <span style={{ fontSize: 10, fontWeight: 900, color: '#fff', fontFamily: "'DM Mono', monospace", lineHeight: 1, textShadow: '0 1px 2px rgba(0,0,0,0.6)' }}>{orb.value}</span>
+                </div>
+              ))}
+            </div>
             <div className="preview-mana-cost">
               {card.manaCost?.map((mana, idx) => (
                 <div

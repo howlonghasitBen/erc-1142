@@ -40,7 +40,7 @@ export default function MintCard({ onToast }: MintCardProps) {
   }
 
   return (
-    <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-8">
+    <div className="w-full px-4 sm:px-6 py-8">
       <h1 className="text-2xl font-bold text-gray-900 mb-2" style={{ fontFamily: 'Inter Tight, sans-serif' }}>
         Create Card
       </h1>
@@ -49,9 +49,9 @@ export default function MintCard({ onToast }: MintCardProps) {
       </p>
 
       {/* Editor layout — CSS Grid for true center preview */}
-      <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr_280px] gap-6 items-start">
+      <div className="flex flex-col lg:flex-row gap-6 items-start w-full justify-evenly">
         {/* Part selector */}
-        <div>
+        <div className="w-full lg:w-[300px] lg:shrink-0">
           <div className="bg-white border border-gray-200 rounded-none overflow-hidden shadow-sm">
             <PartSelector
               parts={CARD_PARTS}
@@ -62,12 +62,12 @@ export default function MintCard({ onToast }: MintCardProps) {
         </div>
 
         {/* Preview — true center column */}
-        <div className="flex justify-center items-start">
+        <div className="flex-1 flex justify-center items-start">
           <CardPreview card={card} />
         </div>
 
         {/* Part editor */}
-        <div>
+        <div className="w-full lg:w-[320px] lg:shrink-0">
           <div className="bg-white border border-gray-200 rounded-none overflow-hidden shadow-sm">
             <PartEditor
               part={selectedPart}

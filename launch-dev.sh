@@ -88,16 +88,22 @@ WHIRLPOOL=$(echo "$DEPLOY_OUT" | grep "Whirlpool:" | awk '{print $NF}')
 BIDNFT=$(echo "$DEPLOY_OUT" | grep "BidNFT:" | awk '{print $NF}')
 ROUTER=$(echo "$DEPLOY_OUT" | grep "Router:" | awk '{print $NF}')
 
-CONTRACTS_FILE="$PROJECT/frontend/src/contracts.ts"
-if [ -f "$CONTRACTS_FILE" ]; then
+for CONTRACTS_FILE in "$PROJECT/frontend/src/contracts.ts" "$HOME/Projects/cog-works/src/contracts/erc1142.ts"; do
+  if [ -f "$CONTRACTS_FILE" ]; then
     sed -i "s|WHIRLPOOL_ADDRESS = '0x[^']*'|WHIRLPOOL_ADDRESS = '${WHIRLPOOL}'|" "$CONTRACTS_FILE"
     sed -i "s|WAVES_ADDRESS     = '0x[^']*'|WAVES_ADDRESS     = '${WAVES}'|" "$CONTRACTS_FILE"
     sed -i "s|BIDNFT_ADDRESS    = '0x[^']*'|BIDNFT_ADDRESS    = '${BIDNFT}'|" "$CONTRACTS_FILE"
     sed -i "s|WETH_ADDRESS      = '0x[^']*'|WETH_ADDRESS      = '${WETH}'|" "$CONTRACTS_FILE"
     sed -i "s|SURFSWAP_ADDRESS  = '0x[^']*'|SURFSWAP_ADDRESS  = '${SURFSWAP}'|" "$CONTRACTS_FILE"
     sed -i "s|ROUTER_ADDRESS    = '0x[^']*'|ROUTER_ADDRESS    = '${ROUTER}'|" "$CONTRACTS_FILE"
-    echo -e "${GREEN}Frontend contracts.ts updated ✓${NC}"
-fi
+    echo -e "${GREEN}Updated: $CONTRACTS_FILE ✓${NC}"
+  fi
+done
+
+# ─── Bulk Mint Cards ───
+echo ""
+echo -e "${YELLOW}Minting cards from card-images...${NC}"
+bash "$PROJECT/scripts/mint-all-cards.sh" "$ROUTER"
 
 # ─── Start Frontend ───
 echo ""
@@ -112,12 +118,24 @@ VITE_PORT=$(grep -oP 'localhost:\K[0-9]+' /tmp/vite-erc1142.log | head -1)
 if [ -z "$VITE_PORT" ]; then VITE_PORT="5173"; fi
 
 echo -e "${GREEN}Frontend PID: ${VITE_PID}${NC}"
+
+# ─── Start cog-works Frontend ───
+COG_DIR="$HOME/Projects/cog-works"
+if [ -d "$COG_DIR" ]; then
+    echo -e "${YELLOW}Starting cog-works dev server...${NC}"
+    cd "$COG_DIR"
+    npx vite --host 0.0.0.0 --port 5174 > /tmp/vite-cogworks.log 2>&1 &
+    COG_PID=$!
+    sleep 2
+    echo -e "${GREEN}cog-works PID: ${COG_PID} (port 5174)${NC}"
+fi
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  🌊 Dev Suite Running!${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  ${GREEN}Frontend:${NC}  http://192.168.0.82:${VITE_PORT}/"
+echo -e "  ${GREEN}cog-works:${NC} http://192.168.0.82:5174/"
 echo -e "  ${GREEN}Anvil RPC:${NC} http://192.168.0.82:8545"
 echo -e "  ${GREEN}Chain ID:${NC}  31337"
 echo ""
@@ -141,6 +159,7 @@ cleanup() {
     echo ""
     echo -e "${YELLOW}Shutting down...${NC}"
     kill $VITE_PID 2>/dev/null
+    kill $COG_PID 2>/dev/null
     kill $ANVIL_PID 2>/dev/null
     echo -e "${GREEN}Done.${NC}"
     exit 0
