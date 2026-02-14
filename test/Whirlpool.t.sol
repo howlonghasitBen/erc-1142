@@ -990,4 +990,145 @@ contract WhirlpoolTest is Test {
         vm.expectRevert("Zero shares");
         whirlpool.swapStake(0, 1, 0);
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //          10. BATCH SWAP STAKE (CONSOLIDATE)
+    // ═══════════════════════════════════════════════════════════
+
+    function testBatchSwapStake2Cards() public {
+        vm.startPrank(alice);
+        router.createCard{value: 0.05 ether}("Card0", "C0", "ipfs://0");
+        router.createCard{value: 0.05 ether}("Card1", "C1", "ipfs://1");
+        router.createCard{value: 0.05 ether}("Card2", "C2", "ipfs://2");
+        vm.stopPrank();
+
+        // Consolidate card 0 and card 1 into card 2
+        uint256[] memory fromIds = new uint256[](2);
+        fromIds[0] = 0;
+        fromIds[1] = 1;
+
+        uint256 card2SharesBefore = whirlpool.stakeOf(2, alice);
+
+        vm.prank(alice);
+        whirlpool.batchSwapStake(fromIds, 2);
+
+        // Source cards should have 0 shares
+        assertEq(whirlpool.stakeOf(0, alice), 0, "Card 0 shares should be 0");
+        assertEq(whirlpool.stakeOf(1, alice), 0, "Card 1 shares should be 0");
+
+        // Target card should have increased shares
+        uint256 card2SharesAfter = whirlpool.stakeOf(2, alice);
+        assertGt(card2SharesAfter, card2SharesBefore, "Card 2 shares should increase");
+    }
+
+    function testBatchSwapStake5Cards() public {
+        vm.startPrank(alice);
+        for (uint256 i = 0; i < 6; i++) {
+            router.createCard{value: 0.05 ether}("Card", "C", "ipfs://x");
+        }
+        vm.stopPrank();
+
+        // Consolidate cards 0-4 into card 5
+        uint256[] memory fromIds = new uint256[](5);
+        for (uint256 i = 0; i < 5; i++) {
+            fromIds[i] = i;
+        }
+
+        vm.prank(alice);
+        whirlpool.batchSwapStake(fromIds, 5);
+
+        for (uint256 i = 0; i < 5; i++) {
+            assertEq(whirlpool.stakeOf(i, alice), 0, "Source card shares should be 0");
+        }
+        assertGt(whirlpool.stakeOf(5, alice), 2_000_000 ether, "Target card should have more shares");
+    }
+
+    function testBatchSwapStakeRevertsEmptyArray() public {
+        vm.prank(alice);
+        router.createCard{value: 0.05 ether}("Card0", "C0", "ipfs://0");
+
+        uint256[] memory fromIds = new uint256[](0);
+
+        vm.prank(alice);
+        vm.expectRevert("Empty array");
+        whirlpool.batchSwapStake(fromIds, 0);
+    }
+
+    function testBatchSwapStakeRevertsNoStake() public {
+        vm.prank(alice);
+        router.createCard{value: 0.05 ether}("Card0", "C0", "ipfs://0");
+        vm.prank(alice);
+        router.createCard{value: 0.05 ether}("Card1", "C1", "ipfs://1");
+
+        // Bob has no stake in card 0
+        uint256[] memory fromIds = new uint256[](1);
+        fromIds[0] = 0;
+
+        vm.prank(bob);
+        vm.expectRevert("No stake in card");
+        whirlpool.batchSwapStake(fromIds, 1);
+    }
+
+    function testBatchSwapStakeOwnershipUpdates() public {
+        // Alice creates 3 cards
+        vm.startPrank(alice);
+        router.createCard{value: 0.05 ether}("Card0", "C0", "ipfs://0");
+        router.createCard{value: 0.05 ether}("Card1", "C1", "ipfs://1");
+        router.createCard{value: 0.05 ether}("Card2", "C2", "ipfs://2");
+        vm.stopPrank();
+
+        assertEq(whirlpool.ownerOfCard(0), alice);
+        assertEq(whirlpool.ownerOfCard(1), alice);
+        assertEq(whirlpool.ownerOfCard(2), alice);
+
+        uint256[] memory fromIds = new uint256[](2);
+        fromIds[0] = 0;
+        fromIds[1] = 1;
+
+        vm.prank(alice);
+        whirlpool.batchSwapStake(fromIds, 2);
+
+        // Source cards should have no owner (Alice fully unstaked)
+        assertEq(whirlpool.ownerOfCard(0), address(0), "Card 0 should have no owner");
+        assertEq(whirlpool.ownerOfCard(1), address(0), "Card 1 should have no owner");
+
+        // Target card should still have Alice as owner
+        assertEq(whirlpool.ownerOfCard(2), alice, "Alice should own card 2");
+    }
+
+    function testBatchSwapStakeRewardsClaimedBeforeUnstake() public {
+        vm.startPrank(alice);
+        router.createCard{value: 0.05 ether}("Card0", "C0", "ipfs://0");
+        router.createCard{value: 0.05 ether}("Card1", "C1", "ipfs://1");
+        vm.stopPrank();
+
+        // Generate swap fees on card 0
+        vm.prank(bob);
+        router.createCard{value: 0.05 ether}("Card2", "C2", "ipfs://2");
+        vm.prank(alice);
+        waves.transfer(bob, 500 ether);
+
+        address card0Token = router.cardToken(0);
+        vm.startPrank(bob);
+        waves.approve(address(surfSwap), type(uint256).max);
+        surfSwap.swapExact(address(waves), card0Token, 50 ether, 0);
+        vm.stopPrank();
+
+        // Alice should have pending rewards on card 0
+        uint256 pendingBefore = whirlpool.pendingRewards(0, alice);
+        assertGt(pendingBefore, 0, "Should have pending rewards");
+
+        uint256 wavesBalanceBefore = IERC20(waves).balanceOf(alice);
+
+        // Consolidate card 0 into card 1
+        uint256[] memory fromIds = new uint256[](1);
+        fromIds[0] = 0;
+
+        vm.prank(alice);
+        whirlpool.batchSwapStake(fromIds, 1);
+
+        // Rewards should have been paid out
+        uint256 wavesBalanceAfter = IERC20(waves).balanceOf(alice);
+        assertGt(wavesBalanceAfter, wavesBalanceBefore, "Rewards should be claimed during batch swap");
+    }
 }

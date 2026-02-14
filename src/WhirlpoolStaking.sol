@@ -378,6 +378,113 @@ contract WhirlpoolStaking is ReentrancyGuard {
         emit Staked(toCardId, msg.sender, sharesToMint);
     }
 
+    /// @notice Batch swap stake from multiple cards into one target card atomically
+    /// @dev Consolidates positions from N source cards into 1 target card in a single tx.
+    ///      Gas optimization: harvests rewards and updates global weight once (not N times).
+    ///      Each source card is fully unstaked via internalSwapCardToCard.
+    ///      All resulting toCard shares are minted in sequence.
+    /// @param fromCardIds Array of source card identifiers (user's full stake is swapped from each)
+    /// @param toCardId Destination card identifier
+    function batchSwapStake(
+        uint256[] calldata fromCardIds,
+        uint256 toCardId
+    ) external nonReentrant {
+        require(fromCardIds.length > 0, "Empty array");
+
+        CardStake storage toCs = cardStakes[toCardId];
+
+        // Harvest toCard rewards once (before any share changes)
+        if (userCardShares[toCardId][msg.sender] > 0) {
+            uint256 pendingTo = userCardShares[toCardId][msg.sender] * toCs.accWavesPerShare / ACC_PRECISION - userCardDebt[toCardId][msg.sender];
+            if (pendingTo > 0) {
+                IERC20(waves).safeTransfer(msg.sender, pendingTo);
+            }
+        }
+
+        // Harvest global rewards once
+        _harvestGlobal(msg.sender);
+
+        uint256 totalSharesToMintForTo = 0;
+        uint256 totalGlobalWeightRemoved = 0;
+
+        for (uint256 i = 0; i < fromCardIds.length; i++) {
+            uint256 fromCardId = fromCardIds[i];
+            require(fromCardId != toCardId, "Same card");
+
+            uint256 shares = userCardShares[fromCardId][msg.sender];
+            require(shares > 0, "No stake in card");
+
+            CardStake storage fromCs = cardStakes[fromCardId];
+
+            // Harvest fromCard rewards
+            uint256 pendingFrom = shares * fromCs.accWavesPerShare / ACC_PRECISION - userCardDebt[fromCardId][msg.sender];
+            if (pendingFrom > 0) {
+                IERC20(waves).safeTransfer(msg.sender, pendingFrom);
+            }
+
+            // Calculate card amount from shares
+            uint256 stakedCards = ISurfSwap(surfSwap).getStakedCards(fromCardId);
+            uint256 cardAmountIn = shares * stakedCards / fromCs.totalShares;
+            require(cardAmountIn > 0, "Zero amount");
+
+            // Burn fromCard shares
+            userCardShares[fromCardId][msg.sender] = 0;
+            fromCs.totalShares -= shares;
+            totalGlobalWeightRemoved += shares;
+
+            // Update fromCard debt
+            userCardDebt[fromCardId][msg.sender] = 0;
+
+            // Swap via AMM
+            uint256 cardAmountOut = ISurfSwap(surfSwap).internalSwapCardToCard(
+                fromCardId,
+                toCardId,
+                cardAmountIn
+            );
+            require(cardAmountOut > 0, "Zero output");
+
+            // Calculate toCard shares to mint
+            uint256 sharesToMint;
+            if (toCs.totalShares + totalSharesToMintForTo == 0) {
+                sharesToMint = cardAmountOut;
+            } else {
+                uint256 currentToStaked = ISurfSwap(surfSwap).getStakedCards(toCardId);
+                require(currentToStaked > 0, "No staked liquidity in target");
+                sharesToMint = cardAmountOut * (toCs.totalShares + totalSharesToMintForTo) / currentToStaked;
+            }
+            require(sharesToMint > 0, "Zero shares minted");
+
+            totalSharesToMintForTo += sharesToMint;
+
+            // Update fromCard ownership
+            address prevFromOwner = fromCs.currentOwner;
+            if (msg.sender == prevFromOwner) {
+                fromCs.currentOwner = address(0);
+                fromCs.ownerShares = 0;
+                emit OwnerChanged(fromCardId, prevFromOwner, address(0));
+            }
+
+            emit Unstaked(fromCardId, msg.sender, shares);
+        }
+
+        // Mint all toCard shares at once
+        userCardShares[toCardId][msg.sender] += totalSharesToMintForTo;
+        toCs.totalShares += totalSharesToMintForTo;
+
+        // Update global weight: remove old, add new
+        userGlobalWeight[msg.sender] = userGlobalWeight[msg.sender] - totalGlobalWeightRemoved + totalSharesToMintForTo;
+        totalGlobalWeight = totalGlobalWeight - totalGlobalWeightRemoved + totalSharesToMintForTo;
+
+        // Update debts
+        userCardDebt[toCardId][msg.sender] = userCardShares[toCardId][msg.sender] * toCs.accWavesPerShare / ACC_PRECISION;
+        userGlobalDebt[msg.sender] = userGlobalWeight[msg.sender] * accEthPerWeight / ACC_PRECISION;
+
+        // Update toCard ownership
+        _updateOwnership(toCardId, msg.sender);
+
+        emit Staked(toCardId, msg.sender, totalSharesToMintForTo);
+    }
+
     /// @notice Claim pending WAVES rewards from card-specific swap fees and global mint fees
     /// @dev Harvests both card accumulator and global (ETH) accumulator in one call
     /// @param cardId Card identifier to claim swap fee rewards from
