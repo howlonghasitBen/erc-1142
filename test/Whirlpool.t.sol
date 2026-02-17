@@ -1024,7 +1024,7 @@ contract WhirlpoolTest is Test {
     function testBatchSwapStake5Cards() public {
         vm.startPrank(alice);
         for (uint256 i = 0; i < 6; i++) {
-            router.createCard{value: 0.05 ether}("Card", "C", "ipfs://x");
+            router.createCard{value: 0.05 ether}(string(abi.encodePacked("Card", vm.toString(i))), "C", "ipfs://x");
         }
         vm.stopPrank();
 

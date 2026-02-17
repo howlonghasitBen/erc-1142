@@ -45,6 +45,7 @@ contract WhirlpoolRouter is ReentrancyGuard {
     // ─── Card registry ──────────────────────────────────────────
     uint256 public totalCards_;
     mapping(uint256 => address) public cardTokens;
+    mapping(bytes32 => bool) public cardNameTaken;
 
     // ─── Events ─────────────────────────────────────────────────
     event CardCreated(uint256 indexed cardId, address indexed minter, address cardToken, uint256 wavesSeeded);
@@ -84,6 +85,9 @@ contract WhirlpoolRouter is ReentrancyGuard {
     ) external payable nonReentrant returns (uint256 cardId) {
         require(msg.value == MINT_FEE, "Exact mint fee required");
         require(totalCards_ < MAX_CARDS, "Max cards reached");
+        bytes32 nameHash = keccak256(abi.encodePacked(_toLower(name)));
+        require(!cardNameTaken[nameHash], "Card name already exists");
+        cardNameTaken[nameHash] = true;
 
         cardId = totalCards_++;
 
@@ -142,5 +146,19 @@ contract WhirlpoolRouter is ReentrancyGuard {
     /// @return Card token contract address
     function cardToken(uint256 cardId) external view returns (address) {
         return cardTokens[cardId];
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //                    INTERNAL
+    // ═══════════════════════════════════════════════════════════
+
+    /// @dev Case-insensitive name comparison helper
+    function _toLower(string calldata s) internal pure returns (string memory) {
+        bytes memory b = bytes(s);
+        bytes memory lower = new bytes(b.length);
+        for (uint256 i = 0; i < b.length; i++) {
+            lower[i] = (b[i] >= 0x41 && b[i] <= 0x5A) ? bytes1(uint8(b[i]) + 32) : b[i];
+        }
+        return string(lower);
     }
 }
