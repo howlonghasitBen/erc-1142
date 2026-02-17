@@ -562,9 +562,11 @@ contract WhirlpoolStaking is ReentrancyGuard {
         emit WETHStaked(msg.sender, amount);
     }
 
-    /// @notice Unstake WETH shares and withdraw proportional WETH from the pool
-    /// @dev User specifies shares to burn. Actual WETH returned = shares/totalShares * poolBalance.
-    ///      This means IL from swaps is distributed proportionally across all stakers.
+    /// @notice Unstake WETH shares and withdraw proportional WETH + WAVES from the pool
+    /// @dev User specifies shares to burn. Returns both sides of the pool proportionally:
+    ///      wethOut = shares/totalShares * wethReserve
+    ///      wavesOut = shares/totalShares * wavesWethReserve
+    ///      This is standard Uniswap-style LP withdrawal for the WETH ↔ WAVES pool.
     /// @param shares Number of shares to unstake
     function unstakeWETH(uint256 shares) external nonReentrant {
         require(shares > 0, "Zero shares");
@@ -579,9 +581,10 @@ contract WhirlpoolStaking is ReentrancyGuard {
         // Harvest global
         _harvestGlobal(msg.sender);
 
-        // Calculate actual WETH to return: shares/totalShares * actual pool balance
-        uint256 actualWeth = _poolWethBalance();
-        uint256 wethOut = shares * actualWeth / totalWethShares;
+        // Calculate proportional share of BOTH sides of the pool
+        (uint256 wavesReserve, uint256 wethReserve) = ISurfSwap(surfSwap).getWethReserves();
+        uint256 wethOut = shares * wethReserve / totalWethShares;
+        uint256 wavesOut = shares * wavesReserve / totalWethShares;
 
         userWethShares[msg.sender] -= shares;
         totalWethShares -= shares;
@@ -590,16 +593,23 @@ contract WhirlpoolStaking is ReentrancyGuard {
         userGlobalWeight[msg.sender] -= weightRemoved;
         totalGlobalWeight -= weightRemoved;
 
-        // Pull WETH from SurfSwap and update virtual reserves
+        // Pull both tokens from SurfSwap
         if (wethOut > 0) {
             ISurfSwap(surfSwap).removeFromWethReserve(wethOut);
+        }
+        if (wavesOut > 0) {
+            ISurfSwap(surfSwap).removeFromWavesWethReserve(wavesOut);
         }
 
         userWethDebt[msg.sender] = userWethShares[msg.sender] * accWavesPerWethShare / ACC_PRECISION;
         userGlobalDebt[msg.sender] = userGlobalWeight[msg.sender] * accEthPerWeight / ACC_PRECISION;
 
+        // Transfer both tokens to user
         if (wethOut > 0) {
             IERC20(weth).safeTransfer(msg.sender, wethOut);
+        }
+        if (wavesOut > 0) {
+            IERC20(waves).safeTransfer(msg.sender, wavesOut);
         }
 
         emit WETHUnstaked(msg.sender, wethOut);
@@ -770,10 +780,21 @@ contract WhirlpoolStaking is ReentrancyGuard {
 
     /// @notice Get the actual WETH a user could withdraw based on their shares
     /// @param user Address to query
-    /// @return Claimable WETH amount (shares/totalShares * poolBalance)
+    /// @return Claimable WETH amount (shares/totalShares * wethReserve)
     function claimableWeth(address user) external view returns (uint256) {
         if (totalWethShares == 0 || userWethShares[user] == 0) return 0;
         return userWethShares[user] * _poolWethBalance() / totalWethShares;
+    }
+
+    /// @notice Get both claimable WETH and WAVES for a user's shares
+    /// @param user Address to query
+    /// @return wethAmount Claimable WETH
+    /// @return wavesAmount Claimable WAVES
+    function claimableWethPool(address user) external view returns (uint256 wethAmount, uint256 wavesAmount) {
+        if (totalWethShares == 0 || userWethShares[user] == 0) return (0, 0);
+        (uint256 wavesR, uint256 wethR) = ISurfSwap(surfSwap).getWethReserves();
+        wethAmount = userWethShares[user] * wethR / totalWethShares;
+        wavesAmount = userWethShares[user] * wavesR / totalWethShares;
     }
 
     /// @notice Backward-compatible alias: returns user's shares (was userWethStake)

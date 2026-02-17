@@ -480,6 +480,23 @@ contract SurfSwap is ReentrancyGuard {
         }
     }
 
+    /// @notice Remove WAVES from the WETH ↔ WAVES pool and return to Whirlpool
+    /// @dev Only WhirlpoolStaking can call. For proportional LP withdrawal.
+    /// @param amount WAVES to remove from reserve
+    function removeFromWavesWethReserve(uint256 amount) external {
+        require(msg.sender == whirlpool, "Only Whirlpool");
+        uint256 actualWaves = IERC20(waves).balanceOf(address(this));
+        uint256 toTransfer = amount > actualWaves ? actualWaves : amount;
+        if (wavesWethReserve >= amount) {
+            wavesWethReserve -= amount;
+        } else {
+            wavesWethReserve = 0;
+        }
+        if (toTransfer > 0) {
+            IERC20(waves).safeTransfer(msg.sender, toTransfer);
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════
     //                       VIEWS
     // ═══════════════════════════════════════════════════════════

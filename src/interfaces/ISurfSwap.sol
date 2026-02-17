@@ -37,6 +37,10 @@ interface ISurfSwap {
     /// @param amount WETH to remove
     function removeFromWethReserve(uint256 amount) external;
 
+    /// @notice Remove WAVES from the WETH ↔ WAVES pool reserve (proportional LP withdrawal)
+    /// @param amount WAVES to remove
+    function removeFromWavesWethReserve(uint256 amount) external;
+
     /// @notice Get current price of card token in WAVES (per 1 token, 18 decimals)
     /// @param cardId Card identifier
     /// @return Price in WAVES
