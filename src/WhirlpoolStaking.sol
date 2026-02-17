@@ -61,10 +61,11 @@ contract WhirlpoolStaking is ReentrancyGuard {
     mapping(uint256 => mapping(address => uint256)) public userCardShares; // User LP shares
     mapping(uint256 => mapping(address => uint256)) public userCardDebt;
 
-    // ─── WETH staking ───────────────────────────────────────────
-    uint256 public totalWethStaked;
-    uint256 public accWavesPerWethShare; // MasterChef accumulator for WETH swap fees
-    mapping(address => uint256) public userWethStake;
+    // ─── WETH staking (share-based) ────────────────────────────
+    uint256 public totalWethShares;       // Total shares issued
+    uint256 public totalWethDeposited;    // Total WETH ever deposited (for share price calc)
+    uint256 public accWavesPerWethShare;  // MasterChef accumulator for WETH swap fees
+    mapping(address => uint256) public userWethShares;  // User's share count
     mapping(address => uint256) public userWethDebt;
 
     // ─── Global mint fee distribution ───────────────────────────
@@ -508,8 +509,9 @@ contract WhirlpoolStaking is ReentrancyGuard {
 
     /// @notice Stake WETH to earn swap fees and 1.5x boosted global mint fee rewards
     /// @dev WETH is transferred to SurfSwap as virtual liquidity for the WAVES ↔ WETH pool.
+    ///      WETH stakers receive shares proportional to their deposit vs pool value.
+    ///      Shares determine reward distribution and withdrawal amount.
     ///      WETH stakers receive 1.5x weight in global mint fee distribution.
-    ///      Harvests any pending WETH + global rewards before modifying stake.
     /// @param amount WETH to stake (must approve WhirlpoolStaking first)
     function stakeWETH(uint256 amount) external nonReentrant {
         require(amount > 0, "Zero amount");
@@ -517,8 +519,8 @@ contract WhirlpoolStaking is ReentrancyGuard {
         IERC20(weth).safeTransferFrom(msg.sender, address(this), amount);
 
         // Harvest WETH swap rewards
-        if (userWethStake[msg.sender] > 0) {
-            uint256 pending = userWethStake[msg.sender] * accWavesPerWethShare / ACC_PRECISION - userWethDebt[msg.sender];
+        if (userWethShares[msg.sender] > 0) {
+            uint256 pending = userWethShares[msg.sender] * accWavesPerWethShare / ACC_PRECISION - userWethDebt[msg.sender];
             if (pending > 0) {
                 IERC20(waves).safeTransfer(msg.sender, pending);
             }
@@ -527,11 +529,23 @@ contract WhirlpoolStaking is ReentrancyGuard {
         // Harvest global
         _harvestGlobal(msg.sender);
 
-        userWethStake[msg.sender] += amount;
-        totalWethStaked += amount;
+        // Calculate shares: if first deposit, shares = amount; otherwise proportional
+        uint256 actualWeth = _poolWethBalance();
+        uint256 sharesToMint;
+        if (totalWethShares == 0 || actualWeth == 0) {
+            sharesToMint = amount;
+        } else {
+            // shares = amount * totalShares / actualPoolWeth (before this deposit hits the pool)
+            sharesToMint = amount * totalWethShares / actualWeth;
+        }
+        require(sharesToMint > 0, "Zero shares");
 
-        // WETH stakers get 1.5x global weight
-        uint256 weightAdded = amount * WETH_BOOST / 10;
+        userWethShares[msg.sender] += sharesToMint;
+        totalWethShares += sharesToMint;
+        totalWethDeposited += amount;
+
+        // WETH stakers get 1.5x global weight (based on shares for consistency)
+        uint256 weightAdded = sharesToMint * WETH_BOOST / 10;
         userGlobalWeight[msg.sender] += weightAdded;
         totalGlobalWeight += weightAdded;
 
@@ -542,22 +556,22 @@ contract WhirlpoolStaking is ReentrancyGuard {
         // Update reserves in SurfSwap
         ISurfSwap(surfSwap).addToWethReserve(amount);
 
-        userWethDebt[msg.sender] = userWethStake[msg.sender] * accWavesPerWethShare / ACC_PRECISION;
+        userWethDebt[msg.sender] = userWethShares[msg.sender] * accWavesPerWethShare / ACC_PRECISION;
         userGlobalDebt[msg.sender] = userGlobalWeight[msg.sender] * accEthPerWeight / ACC_PRECISION;
 
         emit WETHStaked(msg.sender, amount);
     }
 
-    /// @notice Unstake WETH and withdraw from the WAVES ↔ WETH pool
-    /// @dev Harvests pending WETH swap + global rewards before modifying stake.
-    ///      Removes WETH from SurfSwap virtual reserve and transfers back to user.
-    /// @param amount WETH to unstake
-    function unstakeWETH(uint256 amount) external nonReentrant {
-        require(amount > 0, "Zero amount");
-        require(userWethStake[msg.sender] >= amount, "Insufficient stake");
+    /// @notice Unstake WETH shares and withdraw proportional WETH from the pool
+    /// @dev User specifies shares to burn. Actual WETH returned = shares/totalShares * poolBalance.
+    ///      This means IL from swaps is distributed proportionally across all stakers.
+    /// @param shares Number of shares to unstake
+    function unstakeWETH(uint256 shares) external nonReentrant {
+        require(shares > 0, "Zero shares");
+        require(userWethShares[msg.sender] >= shares, "Insufficient shares");
 
         // Harvest WETH swap rewards
-        uint256 pending = userWethStake[msg.sender] * accWavesPerWethShare / ACC_PRECISION - userWethDebt[msg.sender];
+        uint256 pending = userWethShares[msg.sender] * accWavesPerWethShare / ACC_PRECISION - userWethDebt[msg.sender];
         if (pending > 0) {
             IERC20(waves).safeTransfer(msg.sender, pending);
         }
@@ -565,32 +579,40 @@ contract WhirlpoolStaking is ReentrancyGuard {
         // Harvest global
         _harvestGlobal(msg.sender);
 
-        userWethStake[msg.sender] -= amount;
-        totalWethStaked -= amount;
+        // Calculate actual WETH to return: shares/totalShares * actual pool balance
+        uint256 actualWeth = _poolWethBalance();
+        uint256 wethOut = shares * actualWeth / totalWethShares;
 
-        uint256 weightRemoved = amount * WETH_BOOST / 10;
+        userWethShares[msg.sender] -= shares;
+        totalWethShares -= shares;
+
+        uint256 weightRemoved = shares * WETH_BOOST / 10;
         userGlobalWeight[msg.sender] -= weightRemoved;
         totalGlobalWeight -= weightRemoved;
 
-        // Update virtual reserves in SurfSwap
-        ISurfSwap(surfSwap).removeFromWethReserve(amount);
+        // Pull WETH from SurfSwap and update virtual reserves
+        if (wethOut > 0) {
+            ISurfSwap(surfSwap).removeFromWethReserve(wethOut);
+        }
 
-        userWethDebt[msg.sender] = userWethStake[msg.sender] * accWavesPerWethShare / ACC_PRECISION;
+        userWethDebt[msg.sender] = userWethShares[msg.sender] * accWavesPerWethShare / ACC_PRECISION;
         userGlobalDebt[msg.sender] = userGlobalWeight[msg.sender] * accEthPerWeight / ACC_PRECISION;
 
-        IERC20(weth).safeTransfer(msg.sender, amount);
+        if (wethOut > 0) {
+            IERC20(weth).safeTransfer(msg.sender, wethOut);
+        }
 
-        emit WETHUnstaked(msg.sender, amount);
+        emit WETHUnstaked(msg.sender, wethOut);
     }
 
     /// @notice Claim pending WAVES rewards from WETH swap fees and global mint fees
     /// @dev Harvests both WETH swap fee accumulator and global (ETH) accumulator
     function claimWETHRewards() external nonReentrant {
-        uint256 pending = userWethStake[msg.sender] * accWavesPerWethShare / ACC_PRECISION - userWethDebt[msg.sender];
+        uint256 pending = userWethShares[msg.sender] * accWavesPerWethShare / ACC_PRECISION - userWethDebt[msg.sender];
         if (pending > 0) {
             IERC20(waves).safeTransfer(msg.sender, pending);
         }
-        userWethDebt[msg.sender] = userWethStake[msg.sender] * accWavesPerWethShare / ACC_PRECISION;
+        userWethDebt[msg.sender] = userWethShares[msg.sender] * accWavesPerWethShare / ACC_PRECISION;
 
         _harvestGlobal(msg.sender);
         userGlobalDebt[msg.sender] = userGlobalWeight[msg.sender] * accEthPerWeight / ACC_PRECISION;
@@ -629,14 +651,20 @@ contract WhirlpoolStaking is ReentrancyGuard {
     /// @param wavesFee WAVES fee amount to distribute
     function distributeWethSwapFees(uint256 wavesFee) external {
         require(msg.sender == surfSwap, "Only SurfSwap");
-        if (totalWethStaked > 0 && wavesFee > 0) {
-            accWavesPerWethShare += wavesFee * ACC_PRECISION / totalWethStaked;
+        if (totalWethShares > 0 && wavesFee > 0) {
+            accWavesPerWethShare += wavesFee * ACC_PRECISION / totalWethShares;
         }
     }
 
     // ═══════════════════════════════════════════════════════════
     //                    INTERNAL
     // ═══════════════════════════════════════════════════════════
+
+    /// @notice Get the actual WETH balance held by SurfSwap for the WETH pool
+    /// @return Actual WETH token balance in SurfSwap
+    function _poolWethBalance() internal view returns (uint256) {
+        return IERC20(weth).balanceOf(surfSwap);
+    }
 
     /// @notice Harvest pending ETH from global mint fee distribution
     /// @dev Calculates pending = weight × accEthPerWeight - debt, sends ETH via low-level call
@@ -738,6 +766,19 @@ contract WhirlpoolStaking is ReentrancyGuard {
     function pendingGlobalRewards(address user) external view returns (uint256) {
         if (userGlobalWeight[user] == 0) return 0;
         return userGlobalWeight[user] * accEthPerWeight / ACC_PRECISION - userGlobalDebt[user];
+    }
+
+    /// @notice Get the actual WETH a user could withdraw based on their shares
+    /// @param user Address to query
+    /// @return Claimable WETH amount (shares/totalShares * poolBalance)
+    function claimableWeth(address user) external view returns (uint256) {
+        if (totalWethShares == 0 || userWethShares[user] == 0) return 0;
+        return userWethShares[user] * _poolWethBalance() / totalWethShares;
+    }
+
+    /// @notice Backward-compatible alias: returns user's shares (was userWethStake)
+    function userWethStake(address user) external view returns (uint256) {
+        return userWethShares[user];
     }
 
     // Allow receiving ETH
