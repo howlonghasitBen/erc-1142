@@ -100,9 +100,9 @@ for CONTRACTS_FILE in "$PROJECT/frontend/src/contracts.ts" "$HOME/Projects/cog-w
   fi
 done
 
-# ─── Bulk Mint Cards ───
+# ─── Generate Metadata & Mint Cards ───
 echo ""
-echo -e "${YELLOW}Minting cards from card-images...${NC}"
+echo -e "${YELLOW}Generating ERC-721 metadata & minting all cards from cardData.json...${NC}"
 bash "$PROJECT/scripts/mint-all-cards.sh" "$ROUTER"
 
 # ─── Start Frontend ───

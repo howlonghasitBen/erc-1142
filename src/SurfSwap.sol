@@ -462,15 +462,21 @@ contract SurfSwap is ReentrancyGuard {
         }
     }
 
-    /// @notice Remove WETH from the WETH ↔ WAVES pool reserve (called when user unstakes WETH)
-    /// @dev Only WhirlpoolStaking can call. Clamps to 0 to prevent underflow.
+    /// @notice Remove WETH from the WETH ↔ WAVES pool reserve and return to Whirlpool
+    /// @dev Only WhirlpoolStaking can call. Transfers actual WETH tokens back.
+    ///      If pool has less WETH than requested (due to swaps), transfers what's available.
     /// @param amount WETH being removed from reserve
     function removeFromWethReserve(uint256 amount) external {
         require(msg.sender == whirlpool, "Only Whirlpool");
+        uint256 actualWeth = IERC20(weth).balanceOf(address(this));
+        uint256 toTransfer = amount > actualWeth ? actualWeth : amount;
         if (wethReserve >= amount) {
             wethReserve -= amount;
         } else {
             wethReserve = 0;
+        }
+        if (toTransfer > 0) {
+            IERC20(weth).safeTransfer(msg.sender, toTransfer);
         }
     }
 

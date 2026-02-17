@@ -44,10 +44,7 @@ contract LocalDeployScript is Script {
         require(address(whirlpool) == predictedWhirlpool, "Whirlpool mismatch");
         require(address(surfSwap) == predictedSurfSwap, "SurfSwap mismatch");
 
-        // Create 3 sample cards
-        router.createCard{value: 0.05 ether}("Fire Dragon", "FDRAGON", "ipfs://fire");
-        router.createCard{value: 0.05 ether}("Ice Phoenix", "IPHOENIX", "ipfs://ice");
-        router.createCard{value: 0.05 ether}("Thunder Wolf", "TWOLF", "ipfs://wolf");
+        // Cards are minted post-deploy by mint-all-cards.sh from cardData.json
 
         vm.stopBroadcast();
 
