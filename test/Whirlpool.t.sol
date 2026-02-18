@@ -3,7 +3,9 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/WhirlpoolRouter.sol";
-import "../src/WhirlpoolStaking.sol";
+import "../src/GlobalRewards.sol";
+import "../src/CardStaking.sol";
+import "../src/WethPool.sol";
 import "../src/SurfSwap.sol";
 import "../src/WAVES.sol";
 import "../src/CardToken.sol";
@@ -74,38 +76,55 @@ contract MockWETH is IERC20 {
 /// @notice Tests all core functionality: minting, staking, swapping, ownership, fees
 contract WhirlpoolTest is Test {
     WhirlpoolRouter public router;
-    WhirlpoolStaking public whirlpool;
+    GlobalRewards public globalRewards;
+    CardStaking public cardStaking;
+    WethPool public wethPool;
     SurfSwap public surfSwap;
     WAVES public waves;
     BidNFT public bidNFT;
     MockWETH public weth;
+    
+    // Backward compat alias for tests
+    CardStaking public whirlpool;
     
     address public protocol = address(0xBEEF);
     address public alice = address(0xA11CE);
     address public bob = address(0xB0B);
     
     function setUp() public {
-        // Deploy MockWETH first
         weth = new MockWETH();
         
-        // Predict addresses for circular dependencies (same as LocalDeploy.s.sol)
         address deployer = address(this);
         uint256 nonce = vm.getNonce(deployer);
-        address predictedRouter = vm.computeCreateAddress(deployer, nonce + 4);
-        address predictedWhirlpool = vm.computeCreateAddress(deployer, nonce + 2);
-        address predictedSurfSwap = vm.computeCreateAddress(deployer, nonce + 1);
+        // Deploy order: WAVES(nonce), GlobalRewards(+1), SurfSwap(+2), CardStaking(+3), WethPool(+4), BidNFT(+5), Router(+6)
+        address predictedGlobalRewards = vm.computeCreateAddress(deployer, nonce + 1);
+        address predictedSurfSwap = vm.computeCreateAddress(deployer, nonce + 2);
+        address predictedCardStaking = vm.computeCreateAddress(deployer, nonce + 3);
+        address predictedWethPool = vm.computeCreateAddress(deployer, nonce + 4);
+        address predictedRouter = vm.computeCreateAddress(deployer, nonce + 6);
         
-        // Deploy in sequence
-        waves = new WAVES(predictedRouter);                                                      // nonce
-        surfSwap = new SurfSwap(address(waves), address(weth), predictedWhirlpool, predictedRouter); // nonce+1
-        whirlpool = new WhirlpoolStaking(address(waves), address(weth), address(surfSwap), predictedRouter); // nonce+2
-        bidNFT = new BidNFT(address(whirlpool), predictedRouter);                               // nonce+3
-        router = new WhirlpoolRouter(address(waves), address(bidNFT), address(surfSwap), address(whirlpool), address(weth), protocol); // nonce+4
+        waves = new WAVES(predictedRouter);                                                                            // nonce+0
+        globalRewards = new GlobalRewards();                                                                           // nonce+1
+        surfSwap = new SurfSwap(address(waves), address(weth), predictedCardStaking, predictedWethPool, predictedRouter); // nonce+2
+        cardStaking = new CardStaking(address(waves), address(surfSwap), predictedRouter, address(globalRewards));      // nonce+3
+        wethPool = new WethPool(address(waves), address(weth), address(surfSwap), address(globalRewards));             // nonce+4
+        bidNFT = new BidNFT(address(cardStaking), predictedRouter);                                                    // nonce+5
+        router = new WhirlpoolRouter(                                                                                  // nonce+6
+            address(waves), address(bidNFT), address(surfSwap),
+            address(cardStaking), address(globalRewards), address(weth), protocol
+        );
+        
+        // Register operators
+        globalRewards.registerOperator(address(cardStaking));
+        globalRewards.registerOperator(address(wethPool));
         
         // Verify predictions
         require(address(router) == predictedRouter, "Router prediction failed");
-        require(address(whirlpool) == predictedWhirlpool, "Whirlpool prediction failed");
+        require(address(cardStaking) == predictedCardStaking, "CardStaking prediction failed");
         require(address(surfSwap) == predictedSurfSwap, "SurfSwap prediction failed");
+        
+        // Backward compat alias
+        whirlpool = cardStaking;
         
         // Fund test accounts
         vm.deal(alice, 100 ether);
@@ -146,7 +165,7 @@ contract WhirlpoolTest is Test {
         vm.prank(alice);
         uint256 cardId = router.createCard{value: 0.05 ether}("TestCard", "TCARD", "ipfs://test");
         
-        uint256 aliceShares = whirlpool.stakeOf(cardId, alice);
+        uint256 aliceShares = whirlpool.userCardShares(cardId, alice);
         assertEq(aliceShares, 2_000_000 ether, "Minter should get 2M shares (1:1 for first staker)");
         
         uint256 aliceEffectiveBalance = whirlpool.effectiveBalance(cardId, alice);
@@ -215,7 +234,7 @@ contract WhirlpoolTest is Test {
         uint256 cardId = router.createCard{value: 0.05 ether}("TestCard", "TCARD", "ipfs://test");
         address cardToken = router.cardToken(cardId);
         
-        uint256 sharesBefore = whirlpool.stakeOf(cardId, alice);
+        uint256 sharesBefore = whirlpool.userCardShares(cardId, alice);
         
         vm.startPrank(alice);
         waves.approve(address(surfSwap), type(uint256).max);
@@ -224,7 +243,7 @@ contract WhirlpoolTest is Test {
         whirlpool.stake(cardId, bought);
         vm.stopPrank();
         
-        uint256 sharesAfter = whirlpool.stakeOf(cardId, alice);
+        uint256 sharesAfter = whirlpool.userCardShares(cardId, alice);
         assertGt(sharesAfter, sharesBefore, "Shares should increase after staking");
     }
     
@@ -239,7 +258,7 @@ contract WhirlpoolTest is Test {
         IERC20(cardToken).approve(address(whirlpool), type(uint256).max);
         whirlpool.stake(cardId, bought);
         
-        uint256 aliceShares = whirlpool.stakeOf(cardId, alice);
+        uint256 aliceShares = whirlpool.userCardShares(cardId, alice);
         uint256 initialBalance = IERC20(cardToken).balanceOf(alice);
         
         // Unstake only the NEW shares (not the auto-staked 2M)
@@ -265,7 +284,7 @@ contract WhirlpoolTest is Test {
         (, uint256 cardR1) = surfSwap.getReserves(cardId);
         uint256 stakedCards1 = surfSwap.getStakedCards(cardId);
         
-        uint256 aliceShares = whirlpool.stakeOf(cardId, alice);
+        uint256 aliceShares = whirlpool.userCardShares(cardId, alice);
         uint256 newShares = aliceShares - 2_000_000 ether;
         whirlpool.unstake(cardId, newShares);
         vm.stopPrank();
@@ -372,8 +391,8 @@ contract WhirlpoolTest is Test {
     function testWethStakeInitializesPool() public {
         vm.startPrank(bob);
         weth.deposit{value: 10 ether}();
-        weth.approve(address(whirlpool), type(uint256).max);
-        whirlpool.stakeWETH(10 ether);
+        weth.approve(address(wethPool), type(uint256).max);
+        wethPool.stakeWETH(10 ether);
         vm.stopPrank();
         
         (uint256 wavesR, uint256 wethR) = surfSwap.getWethReserves();
@@ -388,8 +407,8 @@ contract WhirlpoolTest is Test {
         // Initialize WETH pool
         vm.startPrank(bob);
         weth.deposit{value: 10 ether}();
-        weth.approve(address(whirlpool), type(uint256).max);
-        whirlpool.stakeWETH(10 ether);
+        weth.approve(address(wethPool), type(uint256).max);
+        wethPool.stakeWETH(10 ether);
         vm.stopPrank();
         
         // Need another card to seed wavesWethReserve
@@ -417,8 +436,8 @@ contract WhirlpoolTest is Test {
         // Initialize WETH pool
         vm.startPrank(bob);
         weth.deposit{value: 10 ether}();
-        weth.approve(address(whirlpool), type(uint256).max);
-        whirlpool.stakeWETH(10 ether);
+        weth.approve(address(wethPool), type(uint256).max);
+        wethPool.stakeWETH(10 ether);
         vm.stopPrank();
         
         // Verify WETH reserve is set up
@@ -470,8 +489,8 @@ contract WhirlpoolTest is Test {
         whirlpool.stake(cardId, bought);
         vm.stopPrank();
         
-        uint256 bobShares = whirlpool.stakeOf(cardId, bob);
-        uint256 aliceShares = whirlpool.stakeOf(cardId, alice);
+        uint256 bobShares = whirlpool.userCardShares(cardId, bob);
+        uint256 aliceShares = whirlpool.userCardShares(cardId, alice);
         
         if (bobShares > aliceShares) {
             assertEq(whirlpool.ownerOfCard(cardId), bob, "Bob should become owner with more shares");
@@ -499,7 +518,7 @@ contract WhirlpoolTest is Test {
         vm.stopPrank();
         
         // Alice unstakes all her shares
-        uint256 aliceShares = whirlpool.stakeOf(cardId, alice);
+        uint256 aliceShares = whirlpool.userCardShares(cardId, alice);
         vm.prank(alice);
         whirlpool.unstake(cardId, aliceShares);
         
@@ -518,7 +537,7 @@ contract WhirlpoolTest is Test {
         vm.stopPrank();
         
         // Now Bob should be owner
-        if (whirlpool.stakeOf(cardId, bob) > 0) {
+        if (whirlpool.userCardShares(cardId, bob) > 0) {
             assertEq(whirlpool.ownerOfCard(cardId), bob, "Bob should become owner after Alice unstakes all");
         }
     }
@@ -582,7 +601,7 @@ contract WhirlpoolTest is Test {
         address cardToken = router.cardToken(cardId);
         
         uint256 aliceEffectiveBefore = whirlpool.effectiveBalance(cardId, alice);
-        uint256 aliceSharesBefore = whirlpool.stakeOf(cardId, alice);
+        uint256 aliceSharesBefore = whirlpool.userCardShares(cardId, alice);
         
         // Give Bob WAVES
         vm.prank(bob);
@@ -597,7 +616,7 @@ contract WhirlpoolTest is Test {
         vm.stopPrank();
         
         uint256 aliceEffectiveAfter = whirlpool.effectiveBalance(cardId, alice);
-        uint256 aliceSharesAfter = whirlpool.stakeOf(cardId, alice);
+        uint256 aliceSharesAfter = whirlpool.userCardShares(cardId, alice);
         
         assertEq(aliceSharesAfter, aliceSharesBefore, "Alice's shares should not change");
         assertLt(aliceEffectiveAfter, aliceEffectiveBefore, "Alice's effective balance should decrease");
@@ -627,8 +646,8 @@ contract WhirlpoolTest is Test {
         whirlpool.stake(cardId, bought);
         vm.stopPrank();
         
-        uint256 bobShares = whirlpool.stakeOf(cardId, bob);
-        uint256 aliceShares = whirlpool.stakeOf(cardId, alice);
+        uint256 bobShares = whirlpool.userCardShares(cardId, bob);
+        uint256 aliceShares = whirlpool.userCardShares(cardId, alice);
         
         if (bobShares > aliceShares) {
             assertEq(whirlpool.ownerOfCard(cardId), bob, "Bob should become owner after staking more");
@@ -663,7 +682,7 @@ contract WhirlpoolTest is Test {
         vm.prank(bob);
         router.createCard{value: 0.05 ether}("Card2", "C2", "ipfs://2");
         
-        uint256 alicePending = whirlpool.pendingGlobalRewards(alice);
+        uint256 alicePending = globalRewards.pendingGlobalRewards(alice);
         assertGt(alicePending, 0, "Alice should receive share of Bob's 0.05 ETH mint fee");
     }
     
@@ -674,15 +693,15 @@ contract WhirlpoolTest is Test {
         // Bob stakes WETH
         vm.startPrank(bob);
         weth.deposit{value: 1 ether}();
-        weth.approve(address(whirlpool), type(uint256).max);
-        whirlpool.stakeWETH(1 ether);
+        weth.approve(address(wethPool), type(uint256).max);
+        wethPool.stakeWETH(1 ether);
         vm.stopPrank();
         
         // Another card minted to distribute fees
         vm.prank(alice);
         router.createCard{value: 0.05 ether}("Card2", "C2", "ipfs://2");
         
-        uint256 bobPending = whirlpool.pendingGlobalRewards(bob);
+        uint256 bobPending = globalRewards.pendingGlobalRewards(bob);
         assertGt(bobPending, 0, "Bob should receive global rewards with 1.5x boost");
     }
     
@@ -694,7 +713,7 @@ contract WhirlpoolTest is Test {
         vm.prank(alice);
         uint256 cardId = router.createCard{value: 0.05 ether}("TestCard", "TCARD", "ipfs://test");
         
-        uint256 shares = whirlpool.stakeOf(cardId, alice);
+        uint256 shares = whirlpool.userCardShares(cardId, alice);
         uint256 effectiveBalance = whirlpool.effectiveBalance(cardId, alice);
         
         assertEq(shares, 2_000_000 ether, "First staker should get 1:1 shares");
@@ -737,8 +756,8 @@ contract WhirlpoolTest is Test {
         vm.stopPrank();
         
         // Alice should have 2M shares in card 0 from auto-stake, 0 shares in card 1
-        uint256 card0Shares = whirlpool.stakeOf(0, alice);
-        uint256 card1Shares = whirlpool.stakeOf(1, alice);
+        uint256 card0Shares = whirlpool.userCardShares(0, alice);
+        uint256 card1Shares = whirlpool.userCardShares(1, alice);
         assertEq(card0Shares, 2_000_000 ether, "Alice should have 2M shares in card 0");
         assertEq(card1Shares, 2_000_000 ether, "Alice should have 2M shares in card 1");
         
@@ -747,11 +766,11 @@ contract WhirlpoolTest is Test {
         whirlpool.swapStake(0, 1, 1_000_000 ether);
         
         // Verify card 0 shares decreased
-        uint256 card0SharesAfter = whirlpool.stakeOf(0, alice);
+        uint256 card0SharesAfter = whirlpool.userCardShares(0, alice);
         assertEq(card0SharesAfter, 1_000_000 ether, "Card 0 shares should decrease by 1M");
         
         // Verify card 1 shares increased
-        uint256 card1SharesAfter = whirlpool.stakeOf(1, alice);
+        uint256 card1SharesAfter = whirlpool.userCardShares(1, alice);
         assertGt(card1SharesAfter, card1Shares, "Card 1 shares should increase");
         
         // Verify Alice still owns card 0 (has remaining shares)
@@ -926,8 +945,8 @@ contract WhirlpoolTest is Test {
         assertEq(whirlpool.ownerOfCard(0), address(0), "Card 0 should have no owner");
         
         // Card 1: Alice should become owner (more shares than Bob)
-        uint256 aliceCard1Shares = whirlpool.stakeOf(1, alice);
-        uint256 bobCard1Shares = whirlpool.stakeOf(1, bob);
+        uint256 aliceCard1Shares = whirlpool.userCardShares(1, alice);
+        uint256 bobCard1Shares = whirlpool.userCardShares(1, bob);
         
         if (aliceCard1Shares > bobCard1Shares) {
             assertEq(whirlpool.ownerOfCard(1), alice, "Alice should become card 1 owner");
@@ -946,11 +965,11 @@ contract WhirlpoolTest is Test {
         whirlpool.swapStake(0, 1, 500_000 ether);
         
         // Verify partial swap
-        uint256 card0SharesAfter = whirlpool.stakeOf(0, alice);
+        uint256 card0SharesAfter = whirlpool.userCardShares(0, alice);
         assertEq(card0SharesAfter, 1_500_000 ether, "Should have 1.5M shares left in card 0");
         
         // Verify card 1 got shares
-        uint256 card1SharesAfter = whirlpool.stakeOf(1, alice);
+        uint256 card1SharesAfter = whirlpool.userCardShares(1, alice);
         assertGt(card1SharesAfter, 2_000_000 ether, "Card 1 shares should increase");
         
         // Alice should still own card 0
@@ -1007,17 +1026,17 @@ contract WhirlpoolTest is Test {
         fromIds[0] = 0;
         fromIds[1] = 1;
 
-        uint256 card2SharesBefore = whirlpool.stakeOf(2, alice);
+        uint256 card2SharesBefore = whirlpool.userCardShares(2, alice);
 
         vm.prank(alice);
         whirlpool.batchSwapStake(fromIds, 2);
 
         // Source cards should have 0 shares
-        assertEq(whirlpool.stakeOf(0, alice), 0, "Card 0 shares should be 0");
-        assertEq(whirlpool.stakeOf(1, alice), 0, "Card 1 shares should be 0");
+        assertEq(whirlpool.userCardShares(0, alice), 0, "Card 0 shares should be 0");
+        assertEq(whirlpool.userCardShares(1, alice), 0, "Card 1 shares should be 0");
 
         // Target card should have increased shares
-        uint256 card2SharesAfter = whirlpool.stakeOf(2, alice);
+        uint256 card2SharesAfter = whirlpool.userCardShares(2, alice);
         assertGt(card2SharesAfter, card2SharesBefore, "Card 2 shares should increase");
     }
 
@@ -1038,9 +1057,9 @@ contract WhirlpoolTest is Test {
         whirlpool.batchSwapStake(fromIds, 5);
 
         for (uint256 i = 0; i < 5; i++) {
-            assertEq(whirlpool.stakeOf(i, alice), 0, "Source card shares should be 0");
+            assertEq(whirlpool.userCardShares(i, alice), 0, "Source card shares should be 0");
         }
-        assertGt(whirlpool.stakeOf(5, alice), 2_000_000 ether, "Target card should have more shares");
+        assertGt(whirlpool.userCardShares(5, alice), 2_000_000 ether, "Target card should have more shares");
     }
 
     function testBatchSwapStakeRevertsEmptyArray() public {
@@ -1065,7 +1084,7 @@ contract WhirlpoolTest is Test {
         fromIds[0] = 0;
 
         vm.prank(bob);
-        vm.expectRevert("No stake in card");
+        vm.expectRevert("No shares in source card");
         whirlpool.batchSwapStake(fromIds, 1);
     }
 

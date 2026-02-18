@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "./interfaces/IWhirlpool.sol";
+import "./interfaces/ICardStaking.sol";
 
 /// @title BidNFT — ERC-721 where ownerOf() dynamically reads from WhirlpoolStaking
 /// @author Whirlpool Team
@@ -13,7 +13,7 @@ import "./interfaces/IWhirlpool.sol";
 ///      Only the Router can mint new NFTs (one per card creation).
 contract BidNFT is ERC721 {
     /// @notice WhirlpoolStaking contract (source of truth for ownership)
-    address public immutable whirlpool;
+    address public immutable cardStaking;
     /// @notice WhirlpoolRouter contract (only address that can mint)
     address public immutable router;
 
@@ -22,10 +22,10 @@ contract BidNFT is ERC721 {
     /// @dev Existence check (prevents double-minting)
     mapping(uint256 => bool) private _exists;
 
-    /// @param whirlpool_ WhirlpoolStaking contract address
+    /// @param cardStaking_ CardStaking contract address
     /// @param router_ WhirlpoolRouter contract address
-    constructor(address whirlpool_, address router_) ERC721("Whirlpool Cards", "WCARD") {
-        whirlpool = whirlpool_;
+    constructor(address cardStaking_, address router_) ERC721("Whirlpool Cards", "WCARD") {
+        cardStaking = cardStaking_;
         router = router_;
     }
 
@@ -39,7 +39,7 @@ contract BidNFT is ERC721 {
         require(!_exists[cardId], "Already minted");
         _exists[cardId] = true;
         _tokenURIs[cardId] = tokenURI_;
-        emit Transfer(address(0), IWhirlpool(whirlpool).ownerOfCard(cardId), cardId);
+        emit Transfer(address(0), ICardStaking(cardStaking).ownerOfCard(cardId), cardId);
     }
 
     /// @notice Get the current owner of a card NFT (reads from WhirlpoolStaking)
@@ -49,7 +49,7 @@ contract BidNFT is ERC721 {
     /// @return Current owner address (biggest LP shareholder)
     function ownerOf(uint256 tokenId) public view override returns (address) {
         require(_exists[tokenId], "Token does not exist");
-        return IWhirlpool(whirlpool).ownerOfCard(tokenId);
+        return ICardStaking(cardStaking).ownerOfCard(tokenId);
     }
 
     /// @notice Get the metadata URI for a card NFT

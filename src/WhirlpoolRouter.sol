@@ -8,7 +8,8 @@ import "./CardToken.sol";
 import "./WAVES.sol";
 import "./BidNFT.sol";
 import "./interfaces/ISurfSwap.sol";
-import "./interfaces/IWhirlpool.sol";
+import "./interfaces/ICardStaking.sol";
+import "./interfaces/IGlobalRewards.sol";
 
 /// @title WhirlpoolRouter — Card creation orchestrator
 /// @author Whirlpool Team
@@ -38,7 +39,8 @@ contract WhirlpoolRouter is ReentrancyGuard {
     WAVES public immutable waves;
     BidNFT public immutable bidNFT;
     ISurfSwap public immutable surfSwap;
-    IWhirlpool public immutable whirlpool;
+    ICardStaking public immutable cardStaking;
+    IGlobalRewards public immutable globalRewards;
     address public immutable weth;
     address public immutable protocol;
 
@@ -55,14 +57,16 @@ contract WhirlpoolRouter is ReentrancyGuard {
         address waves_,
         address bidNFT_,
         address surfSwap_,
-        address whirlpool_,
+        address cardStaking_,
+        address globalRewards_,
         address weth_,
         address protocol_
     ) {
         waves = WAVES(waves_);
         bidNFT = BidNFT(bidNFT_);
         surfSwap = ISurfSwap(surfSwap_);
-        whirlpool = IWhirlpool(whirlpool_);
+        cardStaking = ICardStaking(cardStaking_);
+        globalRewards = IGlobalRewards(globalRewards_);
         weth = weth_;
         protocol = protocol_;
     }
@@ -110,8 +114,8 @@ contract WhirlpoolRouter is ReentrancyGuard {
         // 4. Transfer protocol share
         IERC20(cardAddr).safeTransfer(protocol, cardsToProtocol);
 
-        // 5. Register card in Whirlpool
-        whirlpool.registerCard(cardId, cardAddr);
+        // 5. Register card in CardStaking
+        cardStaking.registerCard(cardId, cardAddr);
 
         // 6. Initialize pool on SurfSwap
         IERC20(address(waves)).approve(address(surfSwap), wavesToAmm);
@@ -119,14 +123,14 @@ contract WhirlpoolRouter is ReentrancyGuard {
         surfSwap.initializePool(cardId, cardAddr, wavesToAmm, cardsToAmm);
 
         // 7. Auto-stake minter's share
-        IERC20(cardAddr).approve(address(whirlpool), cardsToMinter);
-        whirlpool.autoStake(cardId, msg.sender, cardsToMinter);
+        IERC20(cardAddr).approve(address(cardStaking), cardsToMinter);
+        cardStaking.autoStake(cardId, msg.sender, cardsToMinter);
 
         // 8. Mint NFT
         bidNFT.mint(cardId, tokenURI);
 
         // 9. Distribute mint fee to global stakers
-        whirlpool.distributeMintFee{value: MINT_FEE}();
+        globalRewards.distributeMintFee{value: MINT_FEE}();
 
         emit CardCreated(cardId, msg.sender, cardAddr, wavesToAmm);
     }

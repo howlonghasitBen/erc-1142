@@ -6,7 +6,9 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "../src/WAVES.sol";
 import "../src/BidNFT.sol";
 import "../src/SurfSwap.sol";
-import "../src/WhirlpoolStaking.sol";
+import "../src/GlobalRewards.sol";
+import "../src/CardStaking.sol";
+import "../src/WethPool.sol";
 import "../src/WhirlpoolRouter.sol";
 
 contract MockWETH is ERC20 {
@@ -28,33 +30,48 @@ contract LocalDeployScript is Script {
         console.log("WETH:", address(weth));
 
         // Predict addresses for circular refs
+        // Deploy order: WETH(0), WAVES(1), GlobalRewards(2), SurfSwap(3), CardStaking(4), WethPool(5), BidNFT(6), Router(7)
         uint256 nonce = vm.getNonce(deployer);
-        address predictedRouter = vm.computeCreateAddress(deployer, nonce + 4);
-        address predictedWhirlpool = vm.computeCreateAddress(deployer, nonce + 2);
-        address predictedSurfSwap = vm.computeCreateAddress(deployer, nonce + 1);
+        address predictedGlobalRewards = vm.computeCreateAddress(deployer, nonce + 1);
+        address predictedSurfSwap = vm.computeCreateAddress(deployer, nonce + 2);
+        address predictedCardStaking = vm.computeCreateAddress(deployer, nonce + 3);
+        address predictedWethPool = vm.computeCreateAddress(deployer, nonce + 4);
+        address predictedRouter = vm.computeCreateAddress(deployer, nonce + 6);
 
         // Deploy system
-        WAVES waves = new WAVES(predictedRouter);
-        SurfSwap surfSwap = new SurfSwap(address(waves), address(weth), predictedWhirlpool, predictedRouter);
-        WhirlpoolStaking whirlpool = new WhirlpoolStaking(address(waves), address(weth), address(surfSwap), predictedRouter);
-        BidNFT bidNFT = new BidNFT(address(whirlpool), predictedRouter);
-        WhirlpoolRouter router = new WhirlpoolRouter(address(waves), address(bidNFT), address(surfSwap), address(whirlpool), address(weth), deployer);
+        WAVES waves = new WAVES(predictedRouter);                                                              // nonce+0
+        GlobalRewards globalRewards = new GlobalRewards();                                                     // nonce+1
+        SurfSwap surfSwap = new SurfSwap(address(waves), address(weth), predictedCardStaking, predictedWethPool, predictedRouter); // nonce+2
+        CardStaking cardStaking = new CardStaking(address(waves), address(surfSwap), predictedRouter, address(globalRewards));     // nonce+3
+        WethPool wethPool = new WethPool(address(waves), address(weth), address(surfSwap), address(globalRewards));               // nonce+4
+        BidNFT bidNFT = new BidNFT(address(cardStaking), predictedRouter);                                    // nonce+5
+        WhirlpoolRouter router = new WhirlpoolRouter(                                                          // nonce+6
+            address(waves), address(bidNFT), address(surfSwap),
+            address(cardStaking), address(globalRewards), address(weth), deployer
+        );
 
-        require(address(router) == predictedRouter, "Router mismatch");
-        require(address(whirlpool) == predictedWhirlpool, "Whirlpool mismatch");
+        // Register operators on GlobalRewards
+        globalRewards.registerOperator(address(cardStaking));
+        globalRewards.registerOperator(address(wethPool));
+
+        // Verify predictions
+        require(address(globalRewards) == predictedGlobalRewards, "GlobalRewards mismatch");
         require(address(surfSwap) == predictedSurfSwap, "SurfSwap mismatch");
-
-        // Cards are minted post-deploy by mint-all-cards.sh from cardData.json
+        require(address(cardStaking) == predictedCardStaking, "CardStaking mismatch");
+        require(address(wethPool) == predictedWethPool, "WethPool mismatch");
+        require(address(router) == predictedRouter, "Router mismatch");
 
         vm.stopBroadcast();
 
-        console.log("=== Whirlpool System Deployed ===");
-        console.log("WETH:       ", address(weth));
-        console.log("WAVES:      ", address(waves));
-        console.log("SurfSwap:   ", address(surfSwap));
-        console.log("Whirlpool:  ", address(whirlpool));
-        console.log("BidNFT:     ", address(bidNFT));
-        console.log("Router:     ", address(router));
-        console.log("Cards:      ", router.totalCards());
+        console.log("=== Whirlpool System Deployed (Option B) ===");
+        console.log("WETH:          ", address(weth));
+        console.log("WAVES:         ", address(waves));
+        console.log("GlobalRewards: ", address(globalRewards));
+        console.log("SurfSwap:      ", address(surfSwap));
+        console.log("CardStaking:   ", address(cardStaking));
+        console.log("WethPool:      ", address(wethPool));
+        console.log("BidNFT:        ", address(bidNFT));
+        console.log("Router:        ", address(router));
+        console.log("Cards:         ", router.totalCards());
     }
 }

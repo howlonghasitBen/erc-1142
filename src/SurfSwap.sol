@@ -4,7 +4,8 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "./interfaces/IWhirlpool.sol";
+import "./interfaces/ICardStaking.sol";
+import "./interfaces/IWethPool.sol";
 
 /// @title SurfSwap — Constant product AMM with multi-route support
 /// @author Whirlpool Team
@@ -28,8 +29,10 @@ contract SurfSwap is ReentrancyGuard {
     address public immutable waves;
     /// @notice WETH token (provides exit liquidity)
     address public immutable weth;
-    /// @notice WhirlpoolStaking contract (receives fees, manages LP)
-    address public immutable whirlpool;
+    /// @notice CardStaking contract (receives card swap fees, manages card LP)
+    address public immutable cardStaking;
+    /// @notice WethPool contract (receives WETH swap fees, manages WETH LP)
+    address public immutable wethPool;
     /// @notice WhirlpoolRouter contract (only address that can initialize pools)
     address public immutable router;
 
@@ -58,10 +61,11 @@ contract SurfSwap is ReentrancyGuard {
     event Swap(address indexed tokenIn, address indexed tokenOut, address indexed user, uint256 amountIn, uint256 amountOut);
 
     // ─── Constructor ────────────────────────────────────────────
-    constructor(address waves_, address weth_, address whirlpool_, address router_) {
+    constructor(address waves_, address weth_, address cardStaking_, address wethPool_, address router_) {
         waves = waves_;
         weth = weth_;
-        whirlpool = whirlpool_;
+        cardStaking = cardStaking_;
+        wethPool = wethPool_;
         router = router_;
     }
 
@@ -208,8 +212,8 @@ contract SurfSwap is ReentrancyGuard {
 
         // Transfer fee to Whirlpool for distribution
         if (waveFee > 0) {
-            IERC20(waves).safeTransfer(whirlpool, waveFee);
-            IWhirlpool(whirlpool).distributeSwapFees(cardId, waveFee);
+            IERC20(waves).safeTransfer(cardStaking, waveFee);
+            ICardStaking(cardStaking).distributeSwapFees(cardId, waveFee);
         }
     }
 
@@ -245,8 +249,8 @@ contract SurfSwap is ReentrancyGuard {
 
         // Transfer fee to Whirlpool
         if (fee > 0) {
-            IERC20(waves).safeTransfer(whirlpool, fee);
-            IWhirlpool(whirlpool).distributeSwapFees(cardId, fee);
+            IERC20(waves).safeTransfer(cardStaking, fee);
+            ICardStaking(cardStaking).distributeSwapFees(cardId, fee);
         }
     }
 
@@ -271,10 +275,10 @@ contract SurfSwap is ReentrancyGuard {
         wethReserve = newWethReserve + fee;
         wavesWethReserve -= grossOut;
 
-        // Transfer fee to Whirlpool for WETH stakers
+        // Transfer fee to WethPool for WETH stakers
         if (waveFee > 0) {
-            IERC20(waves).safeTransfer(whirlpool, waveFee);
-            IWhirlpool(whirlpool).distributeWethSwapFees(waveFee);
+            IERC20(waves).safeTransfer(wethPool, waveFee);
+            IWethPool(wethPool).distributeWethSwapFees(waveFee);
         }
     }
 
@@ -294,10 +298,10 @@ contract SurfSwap is ReentrancyGuard {
         wavesWethReserve = newWavesReserve;
         wethReserve -= amountOut;
 
-        // Transfer fee to Whirlpool for WETH stakers
+        // Transfer fee to WethPool for WETH stakers
         if (fee > 0) {
-            IERC20(waves).safeTransfer(whirlpool, fee);
-            IWhirlpool(whirlpool).distributeWethSwapFees(fee);
+            IERC20(waves).safeTransfer(wethPool, fee);
+            IWethPool(wethPool).distributeWethSwapFees(fee);
         }
     }
 
@@ -327,7 +331,7 @@ contract SurfSwap is ReentrancyGuard {
         uint256 toCardId,
         uint256 cardAmountIn
     ) external nonReentrant returns (uint256 cardAmountOut) {
-        require(msg.sender == whirlpool, "Only Whirlpool");
+        require(msg.sender == cardStaking, "Only CardStaking");
         require(fromCardId != toCardId, "Same card");
         require(cardAmountIn > 0, "Zero amount");
 
@@ -364,8 +368,8 @@ contract SurfSwap is ReentrancyGuard {
 
         // Distribute fromCard fee
         if (wavesFee1 > 0) {
-            IERC20(waves).safeTransfer(whirlpool, wavesFee1);
-            IWhirlpool(whirlpool).distributeSwapFees(fromCardId, wavesFee1);
+            IERC20(waves).safeTransfer(cardStaking, wavesFee1);
+            ICardStaking(cardStaking).distributeSwapFees(fromCardId, wavesFee1);
         }
 
         // ─── Step 3: Swap WAVES → toCard (internal) ──────────────
@@ -397,8 +401,8 @@ contract SurfSwap is ReentrancyGuard {
 
         // Distribute toCard fee
         if (fee2 > 0) {
-            IERC20(waves).safeTransfer(whirlpool, fee2);
-            IWhirlpool(whirlpool).distributeSwapFees(toCardId, fee2);
+            IERC20(waves).safeTransfer(cardStaking, fee2);
+            ICardStaking(cardStaking).distributeSwapFees(toCardId, fee2);
         }
     }
 
@@ -413,7 +417,7 @@ contract SurfSwap is ReentrancyGuard {
     /// @param amount Tokens being added to reserve
     /// @custom:review This is single-sided LP deposit - tokens go directly into tradeable pool
     function addToCardReserve(uint256 cardId, uint256 amount) external {
-        require(msg.sender == whirlpool, "Only Whirlpool");
+        require(msg.sender == cardStaking, "Only CardStaking");
         CardPool storage pool = cards[cardId];
         require(pool.token != address(0), "Pool not initialized");
         pool.cardReserve += amount;
@@ -426,7 +430,7 @@ contract SurfSwap is ReentrancyGuard {
     /// @param amount Tokens being removed from reserve
     /// @custom:review Clamps stakedCards to 0 if amount exceeds it (prevents underflow from rounding)
     function removeFromCardReserve(uint256 cardId, uint256 amount) external {
-        require(msg.sender == whirlpool, "Only Whirlpool");
+        require(msg.sender == cardStaking, "Only CardStaking");
         CardPool storage pool = cards[cardId];
         require(pool.cardReserve >= amount, "Insufficient reserve");
         pool.cardReserve -= amount;
@@ -454,7 +458,7 @@ contract SurfSwap is ReentrancyGuard {
     /// @dev Only WhirlpoolStaking can call. Bootstraps WAVES side if first deposit.
     /// @param amount WETH being added to reserve
     function addToWethReserve(uint256 amount) external {
-        require(msg.sender == whirlpool, "Only Whirlpool");
+        require(msg.sender == wethPool, "Only WethPool");
         wethReserve += amount;
         // Bootstrap WAVES side if needed
         if (wavesWethReserve == 0 && wethReserve > 0) {
@@ -467,7 +471,7 @@ contract SurfSwap is ReentrancyGuard {
     ///      If pool has less WETH than requested (due to swaps), transfers what's available.
     /// @param amount WETH being removed from reserve
     function removeFromWethReserve(uint256 amount) external {
-        require(msg.sender == whirlpool, "Only Whirlpool");
+        require(msg.sender == wethPool, "Only WethPool");
         uint256 actualWeth = IERC20(weth).balanceOf(address(this));
         uint256 toTransfer = amount > actualWeth ? actualWeth : amount;
         if (wethReserve >= amount) {
@@ -484,7 +488,7 @@ contract SurfSwap is ReentrancyGuard {
     /// @dev Only WhirlpoolStaking can call. For proportional LP withdrawal.
     /// @param amount WAVES to remove from reserve
     function removeFromWavesWethReserve(uint256 amount) external {
-        require(msg.sender == whirlpool, "Only Whirlpool");
+        require(msg.sender == wethPool, "Only WethPool");
         uint256 actualWaves = IERC20(waves).balanceOf(address(this));
         uint256 toTransfer = amount > actualWaves ? actualWaves : amount;
         if (wavesWethReserve >= amount) {
