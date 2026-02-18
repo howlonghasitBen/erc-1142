@@ -73,29 +73,48 @@ else
     exit 1
 fi
 
-# Extract addresses
+# Extract addresses (Option B: 3-way split)
 echo ""
 echo -e "${CYAN}═══ Deployed Addresses ═══${NC}"
-echo "$DEPLOY_OUT" | grep -E "^\s+(WETH|WAVES|SurfSwap|Whirlpool|BidNFT|Router|Card)" | while read -r line; do
+echo "$DEPLOY_OUT" | grep -E "^\s+(WETH|WAVES|GlobalRewards|SurfSwap|CardStaking|WethPool|BidNFT|Router)" | while read -r line; do
     echo -e "  ${GREEN}$line${NC}"
 done
 
-# Update frontend contracts.ts with deployed addresses
+# Parse addresses from deploy output
 WETH=$(echo "$DEPLOY_OUT" | grep "WETH:" | head -1 | awk '{print $NF}')
 WAVES=$(echo "$DEPLOY_OUT" | grep "WAVES:" | head -1 | awk '{print $NF}')
+GLOBAL_REWARDS=$(echo "$DEPLOY_OUT" | grep "GlobalRewards:" | awk '{print $NF}')
 SURFSWAP=$(echo "$DEPLOY_OUT" | grep "SurfSwap:" | awk '{print $NF}')
-WHIRLPOOL=$(echo "$DEPLOY_OUT" | grep "Whirlpool:" | awk '{print $NF}')
+CARD_STAKING=$(echo "$DEPLOY_OUT" | grep "CardStaking:" | awk '{print $NF}')
+WETH_POOL=$(echo "$DEPLOY_OUT" | grep "WethPool:" | awk '{print $NF}')
 BIDNFT=$(echo "$DEPLOY_OUT" | grep "BidNFT:" | awk '{print $NF}')
 ROUTER=$(echo "$DEPLOY_OUT" | grep "Router:" | awk '{print $NF}')
 
 for CONTRACTS_FILE in "$PROJECT/frontend/src/contracts.ts" "$HOME/Projects/cog-works/src/contracts/erc1142.ts"; do
   if [ -f "$CONTRACTS_FILE" ]; then
-    sed -i "s|WHIRLPOOL_ADDRESS = '0x[^']*'|WHIRLPOOL_ADDRESS = '${WHIRLPOOL}'|" "$CONTRACTS_FILE"
+    # Map WHIRLPOOL_ADDRESS → CardStaking (backward compat — card staking functions)
+    sed -i "s|WHIRLPOOL_ADDRESS = '0x[^']*'|WHIRLPOOL_ADDRESS = '${CARD_STAKING}'|" "$CONTRACTS_FILE"
     sed -i "s|WAVES_ADDRESS     = '0x[^']*'|WAVES_ADDRESS     = '${WAVES}'|" "$CONTRACTS_FILE"
     sed -i "s|BIDNFT_ADDRESS    = '0x[^']*'|BIDNFT_ADDRESS    = '${BIDNFT}'|" "$CONTRACTS_FILE"
     sed -i "s|WETH_ADDRESS      = '0x[^']*'|WETH_ADDRESS      = '${WETH}'|" "$CONTRACTS_FILE"
     sed -i "s|SURFSWAP_ADDRESS  = '0x[^']*'|SURFSWAP_ADDRESS  = '${SURFSWAP}'|" "$CONTRACTS_FILE"
     sed -i "s|ROUTER_ADDRESS    = '0x[^']*'|ROUTER_ADDRESS    = '${ROUTER}'|" "$CONTRACTS_FILE"
+    # New Option B addresses (add if not present, update if present)
+    if grep -q "CARD_STAKING_ADDRESS" "$CONTRACTS_FILE"; then
+      sed -i "s|CARD_STAKING_ADDRESS = '0x[^']*'|CARD_STAKING_ADDRESS = '${CARD_STAKING}'|" "$CONTRACTS_FILE"
+    else
+      sed -i "/ROUTER_ADDRESS/a export const CARD_STAKING_ADDRESS = '${CARD_STAKING}' as const;" "$CONTRACTS_FILE"
+    fi
+    if grep -q "WETH_POOL_ADDRESS" "$CONTRACTS_FILE"; then
+      sed -i "s|WETH_POOL_ADDRESS = '0x[^']*'|WETH_POOL_ADDRESS = '${WETH_POOL}'|" "$CONTRACTS_FILE"
+    else
+      sed -i "/CARD_STAKING_ADDRESS/a export const WETH_POOL_ADDRESS    = '${WETH_POOL}' as const;" "$CONTRACTS_FILE"
+    fi
+    if grep -q "GLOBAL_REWARDS_ADDRESS" "$CONTRACTS_FILE"; then
+      sed -i "s|GLOBAL_REWARDS_ADDRESS = '0x[^']*'|GLOBAL_REWARDS_ADDRESS = '${GLOBAL_REWARDS}'|" "$CONTRACTS_FILE"
+    else
+      sed -i "/WETH_POOL_ADDRESS/a export const GLOBAL_REWARDS_ADDRESS = '${GLOBAL_REWARDS}' as const;" "$CONTRACTS_FILE"
+    fi
     echo -e "${GREEN}Updated: $CONTRACTS_FILE ✓${NC}"
   fi
 done
