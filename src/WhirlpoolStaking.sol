@@ -60,6 +60,8 @@ contract WhirlpoolStaking is ReentrancyGuard {
     mapping(uint256 => CardStake) public cardStakes;
     mapping(uint256 => mapping(address => uint256)) public userCardShares; // User LP shares
     mapping(uint256 => mapping(address => uint256)) public userCardDebt;
+    mapping(uint256 => address[]) public cardStakers;                     // Staker list per card
+    mapping(uint256 => mapping(address => bool)) public isCardStaker;     // Quick lookup
 
     // ─── WETH staking (share-based) ────────────────────────────
     uint256 public totalWethShares;       // Total shares issued
@@ -193,6 +195,12 @@ contract WhirlpoolStaking is ReentrancyGuard {
         userCardDebt[cardId][user] = userCardShares[cardId][user] * cs.accWavesPerShare / ACC_PRECISION;
         userGlobalDebt[user] = userGlobalWeight[user] * accEthPerWeight / ACC_PRECISION;
 
+        // Track staker
+        if (!isCardStaker[cardId][user]) {
+            isCardStaker[cardId][user] = true;
+            cardStakers[cardId].push(user);
+        }
+
         // Check ownership (by shares)
         _updateOwnership(cardId, user);
 
@@ -244,16 +252,9 @@ contract WhirlpoolStaking is ReentrancyGuard {
         address token = _getCardToken(cardId);
         IERC20(token).safeTransfer(msg.sender, cardAmount);
 
-        // Check ownership change
-        address prevOwner = cs.currentOwner;
-        if (msg.sender == prevOwner) {
-            if (userCardShares[cardId][msg.sender] > 0) {
-                cs.ownerShares = userCardShares[cardId][msg.sender];
-            } else {
-                cs.currentOwner = address(0);
-                cs.ownerShares = 0;
-                emit OwnerChanged(cardId, prevOwner, address(0));
-            }
+        // Check ownership change — if current owner's shares decreased, scan for new largest
+        if (msg.sender == cs.currentOwner) {
+            _findNewOwner(cardId, msg.sender);
         }
 
         emit Unstaked(cardId, msg.sender, shares);
@@ -357,18 +358,15 @@ contract WhirlpoolStaking is ReentrancyGuard {
         userCardDebt[toCardId][msg.sender] = userCardShares[toCardId][msg.sender] * toCs.accWavesPerShare / ACC_PRECISION;
         userGlobalDebt[msg.sender] = userGlobalWeight[msg.sender] * accEthPerWeight / ACC_PRECISION;
 
-        // Update ownership for fromCard (check if user was owner)
-        address prevFromOwner = fromCs.currentOwner;
-        if (msg.sender == prevFromOwner) {
-            if (userCardShares[fromCardId][msg.sender] > 0) {
-                // User still has shares, update ownerShares
-                fromCs.ownerShares = userCardShares[fromCardId][msg.sender];
-            } else {
-                // User has no shares left, clear ownership
-                fromCs.currentOwner = address(0);
-                fromCs.ownerShares = 0;
-                emit OwnerChanged(fromCardId, prevFromOwner, address(0));
-            }
+        // Track staker for toCard
+        if (!isCardStaker[toCardId][msg.sender]) {
+            isCardStaker[toCardId][msg.sender] = true;
+            cardStakers[toCardId].push(msg.sender);
+        }
+
+        // Update ownership for fromCard — scan for new largest staker
+        if (msg.sender == fromCs.currentOwner) {
+            _findNewOwner(fromCardId, msg.sender);
         }
 
         // Update ownership for toCard (user might become owner)
@@ -457,12 +455,9 @@ contract WhirlpoolStaking is ReentrancyGuard {
 
             totalSharesToMintForTo += sharesToMint;
 
-            // Update fromCard ownership
-            address prevFromOwner = fromCs.currentOwner;
-            if (msg.sender == prevFromOwner) {
-                fromCs.currentOwner = address(0);
-                fromCs.ownerShares = 0;
-                emit OwnerChanged(fromCardId, prevFromOwner, address(0));
+            // Update fromCard ownership — scan for next largest
+            if (msg.sender == fromCs.currentOwner) {
+                _findNewOwner(fromCardId, msg.sender);
             }
 
             emit Unstaked(fromCardId, msg.sender, shares);
@@ -471,6 +466,12 @@ contract WhirlpoolStaking is ReentrancyGuard {
         // Mint all toCard shares at once
         userCardShares[toCardId][msg.sender] += totalSharesToMintForTo;
         toCs.totalShares += totalSharesToMintForTo;
+
+        // Track staker for toCard
+        if (!isCardStaker[toCardId][msg.sender]) {
+            isCardStaker[toCardId][msg.sender] = true;
+            cardStakers[toCardId].push(msg.sender);
+        }
 
         // Update global weight: remove old, add new
         userGlobalWeight[msg.sender] = userGlobalWeight[msg.sender] - totalGlobalWeightRemoved + totalSharesToMintForTo;
@@ -715,6 +716,33 @@ contract WhirlpoolStaking is ReentrancyGuard {
             }
         } else if (user == cs.currentOwner) {
             cs.ownerShares = userShares;
+        }
+    }
+
+    /// @dev Scan staker list to find the new largest shareholder after current owner unstakes
+    function _findNewOwner(uint256 cardId, address prevOwner) internal {
+        CardStake storage cs = cardStakes[cardId];
+        uint256 prevOwnerShares = userCardShares[cardId][prevOwner];
+
+        // If prev owner still has shares, they might still be largest — check
+        address bestAddr = address(0);
+        uint256 bestShares = 0;
+
+        address[] storage stakers = cardStakers[cardId];
+        for (uint256 i = 0; i < stakers.length; i++) {
+            uint256 s = userCardShares[cardId][stakers[i]];
+            if (s > bestShares) {
+                bestShares = s;
+                bestAddr = stakers[i];
+            }
+        }
+
+        if (bestAddr != cs.currentOwner) {
+            cs.currentOwner = bestAddr;
+            cs.ownerShares = bestShares;
+            emit OwnerChanged(cardId, prevOwner, bestAddr);
+        } else {
+            cs.ownerShares = bestShares;
         }
     }
 
