@@ -100,8 +100,15 @@ contract CardStaking is ReentrancyGuard {
             sharesToMint = amount;
         } else {
             uint256 currentStaked = ISurfSwap(surfSwap).getStakedCards(cardId);
-            require(currentStaked > 0, "No staked liquidity");
-            sharesToMint = amount * cs.totalShares / currentStaked;
+            if (currentStaked == 0) {
+                // Re-bootstrap: staked liquidity was fully drained (all unstaked/swapped out).
+                // Reset totalShares to allow clean 1:1 bootstrap. Rare edge but prevents div-by-zero
+                // and stuck ownership per REVIEW.md zero staked cards case.
+                sharesToMint = amount;
+                cs.totalShares = 0;
+            } else {
+                sharesToMint = amount * cs.totalShares / currentStaked;
+            }
         }
         require(sharesToMint > 0, "Zero shares");
 
@@ -145,7 +152,7 @@ contract CardStaking is ReentrancyGuard {
 
         // Calculate card token amount from shares
         uint256 currentStaked = ISurfSwap(surfSwap).getStakedCards(cardId);
-        uint256 cardAmount = shares * currentStaked / cs.totalShares;
+        uint256 cardAmount = (cs.totalShares == 0 || currentStaked == 0) ? 0 : (shares * currentStaked / cs.totalShares);
 
         // Harvest pending card rewards
         uint256 pending = userCardShares[cardId][msg.sender] * cs.accWavesPerShare / ACC_PRECISION - userCardDebt[cardId][msg.sender];
@@ -195,7 +202,7 @@ contract CardStaking is ReentrancyGuard {
 
         // Calculate card amount from shares
         uint256 currentFromStaked = ISurfSwap(surfSwap).getStakedCards(fromCardId);
-        uint256 cardAmountIn = shares * currentFromStaked / fromCs.totalShares;
+        uint256 cardAmountIn = (fromCs.totalShares == 0 || currentFromStaked == 0) ? 0 : (shares * currentFromStaked / fromCs.totalShares);
 
         // Harvest from-card rewards
         uint256 pendingFrom = userCardShares[fromCardId][msg.sender] * fromCs.accWavesPerShare / ACC_PRECISION - userCardDebt[fromCardId][msg.sender];
@@ -224,11 +231,14 @@ contract CardStaking is ReentrancyGuard {
         // Mint to-card shares
         uint256 sharesToMint;
         uint256 currentToStaked = ISurfSwap(surfSwap).getStakedCards(toCardId);
-        if (toCs.totalShares == 0) {
+        uint256 preSwapStaked = (currentToStaked > cardAmountOut) ? currentToStaked - cardAmountOut : 0;
+        if (toCs.totalShares == 0 || preSwapStaked == 0) {
+            // Re-bootstrap target if it had no prior staked liquidity (handles drain-to-zero target card)
             sharesToMint = cardAmountOut;
+            if (preSwapStaked == 0) {
+                toCs.totalShares = 0;
+            }
         } else {
-            uint256 preSwapStaked = currentToStaked - cardAmountOut;
-            require(preSwapStaked > 0, "No staked liquidity in target");
             sharesToMint = cardAmountOut * toCs.totalShares / preSwapStaked;
         }
         require(sharesToMint > 0, "Zero shares from swap");
@@ -294,7 +304,7 @@ contract CardStaking is ReentrancyGuard {
 
             // Calculate card amount
             uint256 currentFromStaked = ISurfSwap(surfSwap).getStakedCards(fromCardId);
-            uint256 cardAmountIn = shares * currentFromStaked / fromCs.totalShares;
+            uint256 cardAmountIn = (fromCs.totalShares == 0 || currentFromStaked == 0) ? 0 : (shares * currentFromStaked / fromCs.totalShares);
 
             // Burn from shares
             userCardShares[fromCardId][msg.sender] = 0;
@@ -308,11 +318,14 @@ contract CardStaking is ReentrancyGuard {
             // Calculate to-card shares
             uint256 sharesToMint;
             uint256 currentToStaked = ISurfSwap(surfSwap).getStakedCards(toCardId);
-            if (toCs.totalShares == 0 && totalSharesToMintForTo == 0) {
+            uint256 preSwapStaked = (currentToStaked > cardAmountOut) ? currentToStaked - cardAmountOut : 0;
+            if ((toCs.totalShares == 0 && totalSharesToMintForTo == 0) || preSwapStaked == 0) {
+                // Re-bootstrap target if drained (batch version)
                 sharesToMint = cardAmountOut;
+                if (preSwapStaked == 0) {
+                    toCs.totalShares = 0;
+                }
             } else {
-                uint256 preSwapStaked = currentToStaked - cardAmountOut;
-                require(preSwapStaked > 0, "No staked liquidity in target");
                 sharesToMint = cardAmountOut * (toCs.totalShares + totalSharesToMintForTo) / preSwapStaked;
             }
             require(sharesToMint > 0, "Zero shares");
@@ -440,6 +453,7 @@ contract CardStaking is ReentrancyGuard {
         CardStake storage cs = cardStakes[cardId];
         if (cs.totalShares == 0) return 0;
         uint256 currentStaked = ISurfSwap(surfSwap).getStakedCards(cardId);
+        if (currentStaked == 0) return 0;
         return userCardShares[cardId][user] * currentStaked / cs.totalShares;
     }
 

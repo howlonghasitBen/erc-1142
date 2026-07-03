@@ -272,12 +272,21 @@ See [marketplace/OPENSEA-COMPARISON.md](marketplace/OPENSEA-COMPARISON.md) for f
 
 ⚠️ This is experimental software. Use at your own risk.
 
-- **No audits** — Code is unaudited
-- **Complexity** — Novel ownership mechanics may have edge cases
-- **Immutability** — No bug fixes post-deployment
-- **Economic risk** — Ownership can be lost to better-funded attackers
+Recent iterative hardening (see `SECURITY.md` for full details):
 
-See [REVIEW.md](docs/REVIEW.md) for known issues and considerations.
+- **Fixed CRITICAL unbacked WETH bootstrap drain** — protocol now seeds real WAVES on first card creation. No more invented reserves.
+- **Fixed HIGH cross-operator reentrancy** in GlobalRewards.
+- **Fixed MEDIUM** broken `balanceOf()` on BidNFT.
+- Previous zero-staked re-bootstrap edge case also resolved.
+- Modern custom errors + locked min liquidity.
+
+- **No professional audit** yet — this is research-grade hardening.
+- **Complexity** — Novel ownership mechanics (active defense via staked LP) may have subtle economic edge cases.
+- **Immutability** — No admin, no upgrades, no emergency functions by design.
+
+See:
+- [SECURITY.md](SECURITY.md)
+- [docs/REVIEW.md](docs/REVIEW.md) (includes older items + status of fixes)
 
 ## License
 

@@ -82,4 +82,12 @@ interface ISurfSwap {
         uint256 toCardId,
         uint256 cardAmountIn
     ) external returns (uint256 cardAmountOut);
+
+    /// @notice Seed initial real WAVES liquidity into the WETH pool (router only)
+    /// @dev Transfers actual WAVES from caller into SurfSwap. Required before WETH staking/swap use.
+    ///      Prevents unbacked virtual WAVES reserves. Minimum seed enforced + 1 wei locked.
+    function seedWethLiquidity(uint256 wavesAmount) external;
+
+    /// @notice Whether the WETH pool has received a proper real-WAVES seed.
+    function isWethPoolSeeded() external view returns (bool);
 }

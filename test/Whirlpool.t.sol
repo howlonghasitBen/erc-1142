@@ -149,7 +149,9 @@ contract WhirlpoolTest is Test {
         router.createCard{value: 0.05 ether}("TestCard", "TCARD", "ipfs://test");
         
         assertEq(waves.balanceOf(alice), 1500 ether, "Minter should receive 1500 WAVES");
-        assertEq(waves.totalSupply(), 2000 ether, "Total WAVES minted should be 2000 (1500 + 500)");
+        // First card also mints + seeds 500 WAVES for safe WETH pool bootstrap (security fix).
+        // Per-card economics remain 2000; system bootstrap is additional.
+        assertEq(waves.totalSupply(), 2500 ether, "Total WAVES minted should be 2000 (card) + 500 (WETH seed on first card)");
     }
     
     function testMintSeedsPool() public {
@@ -368,7 +370,7 @@ contract WhirlpoolTest is Test {
         
         vm.startPrank(alice);
         waves.approve(address(surfSwap), type(uint256).max);
-        vm.expectRevert("Slippage");
+        vm.expectRevert(SurfSwap.SlippageExceeded.selector);
         surfSwap.swapExact(address(waves), cardToken, 10 ether, type(uint256).max);
         vm.stopPrank();
     }
@@ -727,7 +729,7 @@ contract WhirlpoolTest is Test {
         
         vm.startPrank(alice);
         waves.approve(address(surfSwap), type(uint256).max);
-        vm.expectRevert("Zero amount");
+        vm.expectRevert(SurfSwap.ZeroAmount.selector);
         surfSwap.swapExact(address(waves), cardToken, 0, 0);
         vm.stopPrank();
     }

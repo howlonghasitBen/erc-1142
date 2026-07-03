@@ -6,7 +6,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./interfaces/ISurfSwap.sol";
 
-/// @title WhirlpoolStaking — LP staking, ownership tracking, and fee distribution
+/// @title WhirlpoolStaking (LEGACY / DEPRECATED — DO NOT DEPLOY)
+/// @notice This is the old monolithic staking contract. The live system uses CardStaking + WethPool + GlobalRewards ("Option B").
+/// @dev This file is retained only for history. It contains the same CRITICAL unbacked WETH bootstrap bug
+///      as the pre-fix SurfSwap.addToWethReserve (and other differences). Use CardStaking.sol instead.
 /// @author Whirlpool Team
 /// @notice Immutable. No admin. Handles card + WETH staking with MasterChef-style rewards.
 /// @dev This contract implements:

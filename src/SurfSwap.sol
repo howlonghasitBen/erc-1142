@@ -24,6 +24,21 @@ contract SurfSwap is ReentrancyGuard {
     uint256 public constant SWAP_FEE_BPS = 30;
     uint256 private constant BPS = 10000;
 
+    // ─── Custom Errors (gas efficient + clear) ───────────────────
+    error OnlyRouter();
+    error OnlyWethPool();
+    error OnlyCardStaking();
+    error PoolExists();
+    error PoolNotInitialized();
+    error WethPoolNotInitialized();
+    error WethPoolAlreadySeeded();
+    error InsufficientReserve();
+    error InvalidSwapRoute();
+    error ZeroAmount();
+    error SameToken();
+    error SlippageExceeded();
+    error MinimumSeedRequired();
+
     // ─── Immutable refs ─────────────────────────────────────────
     /// @notice WAVES token (hub token for all swaps)
     address public immutable waves;
@@ -59,6 +74,7 @@ contract SurfSwap is ReentrancyGuard {
     // ─── Events ─────────────────────────────────────────────────
     event PoolInitialized(uint256 indexed cardId, address indexed token, uint256 wavesAmount, uint256 cardAmount);
     event Swap(address indexed tokenIn, address indexed tokenOut, address indexed user, uint256 amountIn, uint256 amountOut);
+    event WethLiquiditySeeded(uint256 wavesAmount);
 
     // ─── Constructor ────────────────────────────────────────────
     constructor(address waves_, address weth_, address cardStaking_, address wethPool_, address router_) {
@@ -81,8 +97,8 @@ contract SurfSwap is ReentrancyGuard {
     /// @param cardAmount Initial card liquidity (typically 7.5M tokens = 75% of supply)
     /// @custom:review Initial liquidity ratio determines starting price (currently 500 WAVES : 7.5M CARD)
     function initializePool(uint256 cardId, address token, uint256 wavesAmount, uint256 cardAmount) external {
-        require(msg.sender == router, "Only router");
-        require(cards[cardId].token == address(0), "Pool exists");
+        if (msg.sender != router) revert OnlyRouter();
+        if (cards[cardId].token != address(0)) revert PoolExists();
 
         // Transfer tokens into this contract
         IERC20(waves).safeTransferFrom(msg.sender, address(this), wavesAmount);
@@ -98,10 +114,8 @@ contract SurfSwap is ReentrancyGuard {
         tokenToCard[token] = cardId;
         isCardToken[token] = true;
 
-        // Bootstrap WETH pool if needed (first card)
-        if (wavesWethReserve == 0 && wethReserve > 0) {
-            wavesWethReserve = wavesAmount;
-        }
+        // Note: WETH pool WAVES side is seeded explicitly via seedWethLiquidity by router (real transfer).
+        // Do not steal from per-card WAVES liquidity.
 
         emit PoolInitialized(cardId, token, wavesAmount, cardAmount);
     }
@@ -132,8 +146,8 @@ contract SurfSwap is ReentrancyGuard {
         uint256 amountIn,
         uint256 minAmountOut
     ) external nonReentrant returns (uint256 amountOut) {
-        require(amountIn > 0, "Zero amount");
-        require(tokenIn != tokenOut, "Same token");
+        if (amountIn == 0) revert ZeroAmount();
+        if (tokenIn == tokenOut) revert SameToken();
 
         // Transfer input tokens
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
@@ -163,10 +177,10 @@ contract SurfSwap is ReentrancyGuard {
             uint256 wavesMiddle = _swapWethToWaves(amountIn);
             amountOut = _swapWavesToCard(tokenOut, wavesMiddle);
         } else {
-            revert("Invalid swap route");
+            revert InvalidSwapRoute();
         }
 
-        require(amountOut >= minAmountOut, "Slippage");
+        if (amountOut < minAmountOut) revert SlippageExceeded();
 
         // Transfer output
         IERC20(tokenOut).safeTransfer(msg.sender, amountOut);
@@ -260,7 +274,7 @@ contract SurfSwap is ReentrancyGuard {
     /// @param amountIn WETH being sold (input)
     /// @return amountOut WAVES received (after fees)
     function _swapWethToWaves(uint256 amountIn) internal returns (uint256 amountOut) {
-        require(wethReserve > 0 && wavesWethReserve > 0, "WETH pool not initialized");
+        if (wethReserve == 0 || wavesWethReserve == 0) revert WethPoolNotInitialized();
 
         uint256 fee = amountIn * SWAP_FEE_BPS / BPS;
         uint256 amountInAfterFee = amountIn - fee;
@@ -287,7 +301,7 @@ contract SurfSwap is ReentrancyGuard {
     /// @param amountIn WAVES being sold (input)
     /// @return amountOut WETH received (after fees)
     function _swapWavesToWeth(uint256 amountIn) internal returns (uint256 amountOut) {
-        require(wethReserve > 0 && wavesWethReserve > 0, "WETH pool not initialized");
+        if (wethReserve == 0 || wavesWethReserve == 0) revert WethPoolNotInitialized();
 
         uint256 fee = amountIn * SWAP_FEE_BPS / BPS;
         uint256 amountInAfterFee = amountIn - fee;
@@ -331,16 +345,16 @@ contract SurfSwap is ReentrancyGuard {
         uint256 toCardId,
         uint256 cardAmountIn
     ) external nonReentrant returns (uint256 cardAmountOut) {
-        require(msg.sender == cardStaking, "Only CardStaking");
-        require(fromCardId != toCardId, "Same card");
-        require(cardAmountIn > 0, "Zero amount");
+        if (msg.sender != cardStaking) revert OnlyCardStaking();
+        if (fromCardId == toCardId) revert SameToken();
+        if (cardAmountIn == 0) revert ZeroAmount();
 
         CardPool storage fromPool = cards[fromCardId];
         CardPool storage toPool = cards[toCardId];
-        require(fromPool.token != address(0), "From pool not initialized");
-        require(toPool.token != address(0), "To pool not initialized");
-        require(fromPool.cardReserve >= cardAmountIn, "Insufficient from reserve");
-        require(fromPool.stakedCards >= cardAmountIn, "Insufficient staked cards");
+        if (fromPool.token == address(0)) revert PoolNotInitialized();
+        if (toPool.token == address(0)) revert PoolNotInitialized();
+        if (fromPool.cardReserve < cardAmountIn) revert InsufficientReserve();
+        if (fromPool.stakedCards < cardAmountIn) revert InsufficientReserve();
 
         // ─── Step 1: Remove from fromCard reserves ──────────────
         // These tokens are leaving the staked pool to be swapped
@@ -417,9 +431,9 @@ contract SurfSwap is ReentrancyGuard {
     /// @param amount Tokens being added to reserve
     /// @custom:review This is single-sided LP deposit - tokens go directly into tradeable pool
     function addToCardReserve(uint256 cardId, uint256 amount) external {
-        require(msg.sender == cardStaking, "Only CardStaking");
+        if (msg.sender != cardStaking) revert OnlyCardStaking();
         CardPool storage pool = cards[cardId];
-        require(pool.token != address(0), "Pool not initialized");
+        if (pool.token == address(0)) revert PoolNotInitialized();
         pool.cardReserve += amount;
         pool.stakedCards += amount;
     }
@@ -430,9 +444,9 @@ contract SurfSwap is ReentrancyGuard {
     /// @param amount Tokens being removed from reserve
     /// @custom:review Clamps stakedCards to 0 if amount exceeds it (prevents underflow from rounding)
     function removeFromCardReserve(uint256 cardId, uint256 amount) external {
-        require(msg.sender == cardStaking, "Only CardStaking");
+        if (msg.sender != cardStaking) revert OnlyCardStaking();
         CardPool storage pool = cards[cardId];
-        require(pool.cardReserve >= amount, "Insufficient reserve");
+        if (pool.cardReserve < amount) revert InsufficientReserve();
         pool.cardReserve -= amount;
         if (pool.stakedCards >= amount) {
             pool.stakedCards -= amount;
@@ -455,15 +469,14 @@ contract SurfSwap is ReentrancyGuard {
     // ═══════════════════════════════════════════════════════════
 
     /// @notice Add WETH to the WETH ↔ WAVES pool reserve (called when user stakes WETH)
-    /// @dev Only WhirlpoolStaking can call. Bootstraps WAVES side if first deposit.
-    /// @param amount WETH being added to reserve
+    /// @dev Only WethPool can call. Does NOT invent virtual WAVES reserves.
+    ///      The WAVES side MUST be pre-seeded with real WAVES via seedWethLiquidity (router).
+    ///      This prevents the critical unbacked bootstrap drain vulnerability.
+    /// @param amount WETH being added to reserve (real WETH transferred to this contract beforehand)
     function addToWethReserve(uint256 amount) external {
-        require(msg.sender == wethPool, "Only WethPool");
+        if (msg.sender != wethPool) revert OnlyWethPool();
         wethReserve += amount;
-        // Bootstrap WAVES side if needed
-        if (wavesWethReserve == 0 && wethReserve > 0) {
-            wavesWethReserve = 500 ether; // bootstrap with 500 WAVES equivalent
-        }
+        // No automatic bootstrap of wavesWethReserve here — must be real WAVES.
     }
 
     /// @notice Remove WETH from the WETH ↔ WAVES pool reserve and return to Whirlpool
@@ -471,7 +484,7 @@ contract SurfSwap is ReentrancyGuard {
     ///      If pool has less WETH than requested (due to swaps), transfers what's available.
     /// @param amount WETH being removed from reserve
     function removeFromWethReserve(uint256 amount) external {
-        require(msg.sender == wethPool, "Only WethPool");
+        if (msg.sender != wethPool) revert OnlyWethPool();
         uint256 actualWeth = IERC20(weth).balanceOf(address(this));
         uint256 toTransfer = amount > actualWeth ? actualWeth : amount;
         if (wethReserve >= amount) {
@@ -485,10 +498,10 @@ contract SurfSwap is ReentrancyGuard {
     }
 
     /// @notice Remove WAVES from the WETH ↔ WAVES pool and return to Whirlpool
-    /// @dev Only WhirlpoolStaking can call. For proportional LP withdrawal.
+    /// @dev Only WethPool can call. For proportional LP withdrawal.
     /// @param amount WAVES to remove from reserve
     function removeFromWavesWethReserve(uint256 amount) external {
-        require(msg.sender == wethPool, "Only WethPool");
+        if (msg.sender != wethPool) revert OnlyWethPool();
         uint256 actualWaves = IERC20(waves).balanceOf(address(this));
         uint256 toTransfer = amount > actualWaves ? actualWaves : amount;
         if (wavesWethReserve >= amount) {
@@ -499,6 +512,28 @@ contract SurfSwap is ReentrancyGuard {
         if (toTransfer > 0) {
             IERC20(waves).safeTransfer(msg.sender, toTransfer);
         }
+    }
+
+    /// @notice Seed the WETH pool with real WAVES liquidity (only Router)
+    /// @dev Transfers actual WAVES from the router into SurfSwap and sets the virtual WAVES reserve.
+    ///      This replaces the previous dangerous auto-bootstrap that allowed draining unbacked WAVES.
+    ///      Must be called before WETH staking or WETH-related swaps are usable.
+    function seedWethLiquidity(uint256 wavesAmount) external {
+        if (msg.sender != router) revert OnlyRouter();
+        if (wavesWethReserve != 0) revert WethPoolAlreadySeeded();
+        if (wavesAmount < 1 ether) revert MinimumSeedRequired();
+
+        IERC20(waves).safeTransferFrom(msg.sender, address(this), wavesAmount);
+        wavesWethReserve = wavesAmount;
+
+        // Lock 1 wei of WAVES as permanent minimum liquidity (Uniswap V2 style)
+        // This WAVES remains in the contract balance but is excluded from withdrawable reserves.
+        // Prevents certain empty-pool price attacks and demonstrates proper bootstrapping.
+        if (wavesWethReserve > 1) {
+            wavesWethReserve -= 1;
+        }
+
+        emit WethLiquiditySeeded(wavesAmount);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -527,10 +562,17 @@ contract SurfSwap is ReentrancyGuard {
     }
 
     /// @notice Get reserve balances for WETH pool
-    /// @dev wethReserve is virtual (from staking), wavesWethReserve is real
-    /// @return wavesR WAVES in WETH pool
-    /// @return wethR WETH in pool (virtual from staking)
+    /// @dev wavesWethReserve is backed by real WAVES transferred via seedWethLiquidity.
+    ///      wethReserve is virtual (from WETH stakers). Both must be >0 for WETH swaps.
+    /// @return wavesR WAVES (real) in WETH pool
+    /// @return wethR WETH in pool (from staking)
     function getWethReserves() external view returns (uint256 wavesR, uint256 wethR) {
         return (wavesWethReserve, wethReserve);
+    }
+
+    /// @notice Whether the WETH ↔ WAVES pool has been properly seeded with real WAVES.
+    /// @dev Returns true after the Router calls seedWethLiquidity during first card creation.
+    function isWethPoolSeeded() external view returns (bool) {
+        return wavesWethReserve > 0;
     }
 }

@@ -35,6 +35,10 @@ contract WhirlpoolRouter is ReentrancyGuard {
     uint256 private constant CARD_MINTER_PCT = 20;  // 2M
     uint256 private constant CARD_PROTOCOL_PCT = 5;  // 500K
 
+    // ─── WETH pool seed (real WAVES transferred on first card to safely bootstrap WETH pool)
+    // Prevents CRITICAL unbacked virtual reserve drain. 500 WAVES provides initial exit liquidity.
+    uint256 private constant WETH_POOL_SEED_WAVES = 500 ether;
+
     // ─── Immutable refs ─────────────────────────────────────────
     WAVES public immutable waves;
     BidNFT public immutable bidNFT;
@@ -105,6 +109,14 @@ contract WhirlpoolRouter is ReentrancyGuard {
         uint256 wavesToMinter = WAVES_PER_CARD * WAVES_MINTER_PCT / 100;
         waves.mint(address(this), wavesToAmm);
         waves.mint(msg.sender, wavesToMinter);
+
+        // 2b. On first card, seed real WAVES into WETH pool (critical security fix)
+        // This ensures wavesWethReserve is backed by actual transferred WAVES, not invented accounting.
+        if (cardId == 0) {
+            waves.mint(address(this), WETH_POOL_SEED_WAVES);
+            IERC20(address(waves)).approve(address(surfSwap), WETH_POOL_SEED_WAVES);
+            surfSwap.seedWethLiquidity(WETH_POOL_SEED_WAVES);
+        }
 
         // 3. Calculate card token distributions
         uint256 cardsToAmm = CARD_SUPPLY * CARD_AMM_PCT / 100;

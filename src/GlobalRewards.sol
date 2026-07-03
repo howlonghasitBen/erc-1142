@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
 /// @title GlobalRewards — Central weight registry + ETH mint fee distribution hub
 /// @author Whirlpool Team
 /// @notice Manages weighted ETH distribution to all staking contracts (CardStaking, WethPool, etc.)
 /// @dev MasterChef-style O(1) accumulator. Staking contracts register/remove weight on behalf of users.
 ///      Any new staking type can plug in by being registered as an operator.
-contract GlobalRewards {
+///      ReentrancyGuard added + effects-before-interactions in _harvest to block cross-operator reentrancy.
+contract GlobalRewards is ReentrancyGuard {
     uint256 private constant ACC_PRECISION = 1e18;
 
     // ─── State ──────────────────────────────────────────────────
@@ -63,7 +66,7 @@ contract GlobalRewards {
 
     /// @notice Harvest pending ETH rewards for a user (called by staking contracts before weight changes)
     /// @param user Address to harvest for
-    function harvestGlobal(address user) external onlyOperator {
+    function harvestGlobal(address user) external onlyOperator nonReentrant {
         _harvest(user);
     }
 
@@ -100,10 +103,11 @@ contract GlobalRewards {
         if (userGlobalWeight[user] > 0) {
             uint256 pending = userGlobalWeight[user] * accEthPerWeight / ACC_PRECISION - userGlobalDebt[user];
             if (pending > 0) {
+                // Effects before interactions (fix for cross-contract reentrancy via multiple operators)
+                userGlobalDebt[user] = userGlobalWeight[user] * accEthPerWeight / ACC_PRECISION;
                 (bool ok,) = user.call{value: pending}("");
                 require(ok, "ETH transfer failed");
             }
-            userGlobalDebt[user] = userGlobalWeight[user] * accEthPerWeight / ACC_PRECISION;
         }
     }
 

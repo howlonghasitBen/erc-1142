@@ -67,6 +67,14 @@ contract BidNFT is ERC721 {
         return _exists[tokenId];
     }
 
+    /// @notice balanceOf is intentionally disabled
+    /// @dev Ownership is virtual/dynamic (determined by top staker in CardStaking via ownerOfCard()).
+    ///      Standard ERC-721 balanceOf would always return 0 because we never call _mint.
+    ///      Marketplaces/wallets should use per-card ownerOfCard queries or enumerate.
+    function balanceOf(address) public pure override returns (uint256) {
+        revert("balanceOf disabled: ownership is virtual via CardStaking.ownerOfCard(cardId)");
+    }
+
     /// @notice Transfers are disabled — ownership is determined by staking position
     function transferFrom(address, address, uint256) public pure override {
         revert("Transfers disabled");
