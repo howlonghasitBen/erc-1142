@@ -25,6 +25,8 @@ echo ""
 echo -e "${YELLOW}Cleaning up old processes...${NC}"
 pkill -f "anvil --host" 2>/dev/null || true
 pkill -f "vite.*erc-1142" 2>/dev/null || true
+pkill -f "vite.*5174" 2>/dev/null || true
+pkill -f "node.*cog-works" 2>/dev/null || true
 sleep 1
 
 # ─── Run tests ───
@@ -50,7 +52,7 @@ echo -e "${YELLOW}Starting Anvil (Chain 31337)...${NC}"
 anvil --host 0.0.0.0 --code-size-limit 50000 --gas-limit 30000000 \
     > /tmp/anvil-erc1142.log 2>&1 &
 ANVIL_PID=$!
-echo -e "${GREEN}Anvil PID: ${ANVIL_PID}${NC}"
+echo -e "${GREEN}Anvil PID: ${ANVIL_PID} (listening on 0.0.0.0:8545)${NC}"
 sleep 2
 
 # Check Anvil started
@@ -122,41 +124,55 @@ done
 # ─── Generate Metadata & Mint Cards ───
 echo ""
 echo -e "${YELLOW}Generating ERC-721 metadata & minting all cards from cardData.json...${NC}"
+echo -e "${CYAN}(First card will automatically seed the WETH pool with real WAVES — post-audit security fix)${NC}"
 bash "$PROJECT/scripts/mint-all-cards.sh" "$ROUTER"
 
-# ─── Start Frontend ───
+# ─── Verify WETH pool seed (new post-iteration check) ───
 echo ""
-echo -e "${YELLOW}Starting frontend...${NC}"
+echo -e "${YELLOW}Verifying WETH pool seeding...${NC}"
+SEED_CHECK=$(cast call "$SURFSWAP" "isWethPoolSeeded()(bool)" --rpc-url http://127.0.0.1:8545 2>/dev/null || echo "false")
+if [ "$SEED_CHECK" = "true" ]; then
+  echo -e "${GREEN}✓ WETH pool is securely seeded (real WAVES backing)${NC}"
+else
+  echo -e "${YELLOW}⚠ WETH pool seed status: $SEED_CHECK (check manually if needed)${NC}"
+fi
+WETH_RESERVES=$(cast call "$SURFSWAP" "getWethReserves()(uint256,uint256)" --rpc-url http://127.0.0.1:8545 2>/dev/null || echo "0 0")
+echo -e "  WETH Reserves: $WETH_RESERVES"
+
+# ─── Start Internal Frontend (build + serve for robustness) ───
+echo ""
+echo -e "${YELLOW}Building and starting internal frontend...${NC}"
 cd "$PROJECT/frontend"
-npm run dev -- --host 0.0.0.0 > /tmp/vite-erc1142.log 2>&1 &
+npm run build 2>&1 | tail -3 || true
+npx serve dist -l 5173 > /tmp/serve-internal.log 2>&1 &
 VITE_PID=$!
-sleep 3
+sleep 2
+echo -e "${GREEN}Internal frontend (static) PID: ${VITE_PID} on :5173${NC}"
 
-# Detect port
-VITE_PORT=$(grep -oP 'localhost:\K[0-9]+' /tmp/vite-erc1142.log | head -1)
-if [ -z "$VITE_PORT" ]; then VITE_PORT="5173"; fi
+# Detect actual port if using dev (fallback)
+VITE_PORT=5173
 
-echo -e "${GREEN}Frontend PID: ${VITE_PID}${NC}"
-
-# ─── Start cog-works Frontend ───
+# ─── Start cog-works Frontend (build + serve for env robustness) ───
 COG_DIR="$HOME/Projects/cog-works"
 if [ -d "$COG_DIR" ]; then
-    echo -e "${YELLOW}Starting cog-works dev server...${NC}"
+    echo -e "${YELLOW}Building + serving cog-works (paired frontend) on :5174...${NC}"
     cd "$COG_DIR"
-    npx vite --host 0.0.0.0 --port 5174 > /tmp/vite-cogworks.log 2>&1 &
+    npm run build 2>&1 | tail -3 || true
+    npx serve dist -l 5174 > /tmp/serve-cogworks.log 2>&1 &
     COG_PID=$!
     sleep 2
-    echo -e "${GREEN}cog-works PID: ${COG_PID} (port 5174)${NC}"
+    echo -e "${GREEN}cog-works (static) PID: ${COG_PID} (http://localhost:5174)${NC}"
 fi
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}  🌊 Dev Suite Running!${NC}"
+echo -e "${CYAN}  🌊 Dev Suite Running! (Updated launch script)${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "  ${GREEN}Frontend:${NC}  http://192.168.0.82:${VITE_PORT}/"
-echo -e "  ${GREEN}cog-works:${NC} http://192.168.0.82:5174/"
-echo -e "  ${GREEN}Anvil RPC:${NC} http://192.168.0.82:8545"
+echo -e "  ${GREEN}Internal Frontend:${NC}  http://localhost:${VITE_PORT}/"
+echo -e "  ${GREEN}cog-works (main):${NC}   http://localhost:5174/"
+echo -e "  ${GREEN}Anvil RPC:${NC}          http://127.0.0.1:8545"
 echo -e "  ${GREEN}Chain ID:${NC}  31337"
+echo -e "  ${YELLOW}Note:${NC} Frontends served statically (dev watchers limited in env). Contract addresses injected. WETH pool pre-seeded on first card."
 echo ""
 echo -e "  ${YELLOW}Test Accounts (10,000 ETH each):${NC}"
 echo -e "  #0: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
@@ -168,7 +184,9 @@ echo -e "      PK: 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cda
 echo ""
 echo -e "  ${YELLOW}Logs:${NC}"
 echo -e "    Anvil: tail -f /tmp/anvil-erc1142.log"
-echo -e "    Vite:  tail -f /tmp/vite-erc1142.log"
+echo -e "    Internal: tail -f /tmp/serve-internal.log"
+echo -e "    cog-works: tail -f /tmp/serve-cogworks.log"
+echo -e "  ${YELLOW}To use:${NC} Import Anvil PK #0 into wallet, connect to RPC, use test ETH."
 echo ""
 echo -e "  ${RED}Press Ctrl+C to stop everything${NC}"
 echo ""
@@ -177,9 +195,10 @@ echo ""
 cleanup() {
     echo ""
     echo -e "${YELLOW}Shutting down...${NC}"
-    kill $VITE_PID 2>/dev/null
-    kill $COG_PID 2>/dev/null
-    kill $ANVIL_PID 2>/dev/null
+    kill $VITE_PID 2>/dev/null || true
+    kill $COG_PID 2>/dev/null || true
+    kill $ANVIL_PID 2>/dev/null || true
+    pkill -f "vite.*5174" 2>/dev/null || true
     echo -e "${GREEN}Done.${NC}"
     exit 0
 }

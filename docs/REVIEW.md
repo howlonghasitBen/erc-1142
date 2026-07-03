@@ -4,15 +4,17 @@ This document tracks issues, edge cases, and optimizations that need review befo
 
 ## Status
 
-**Current Test Results**: ✅ 45/45 passing
+**Current Test Results**: ✅ 51/51 passing (includes swapStake, batch etc.)
 
-**Contract Sizes**:
-- WhirlpoolRouter: ~19 KB ✅
-- WhirlpoolStaking: ~23 KB ⚠️ Near limit
-- SurfSwap: ~22 KB ⚠️ Requires `--code-size-limit` locally
-- BidNFT: ~8 KB ✅
-- WAVES: ~4 KB ✅
-- CardToken: ~3 KB ✅
+**Contract Sizes** (post-refactor + viaIR):
+- WhirlpoolRouter: ~7.2 KB ✅
+- CardStaking: ~10.4 KB ✅
+- SurfSwap: ~6.7 KB ✅ (no longer near limit)
+- WethPool: ~4.7 KB ✅
+- BidNFT: ~3 KB ✅
+- WAVES: ~2 KB ✅
+- CardToken: ~1.7 KB ✅
+- GlobalRewards: ~1.8 KB ✅
 
 ## Fixed Issues
 
@@ -54,50 +56,13 @@ sharesToMint = amount * cs.totalShares / currentStaked;
 
 ### 2. Contract Size Optimization
 
-**Status**: ⚠️ BLOCKER for mainnet
+**Status**: ✅ RESOLVED (no longer a blocker)
 
-**Issue**: SurfSwap.sol is ~22KB, near the 24KB EIP-170 limit. Currently requires:
-```toml
-code_size_limit = 30000
-```
-in `foundry.toml` for local compilation.
+**Issue**: Previously ~22KB (required code-size override), but after full refactor + optimizer/viaIR, now ~6.7KB.
 
-**Why It Matters**: Mainnet nodes reject contracts >24KB. This is a hard limit, no exceptions.
+**Current**: All contracts comfortably under EIP-170 (SurfSwap 6.7KB, CardStaking 10.4KB etc). See sizes above.
 
-**Current Size Breakdown** (estimated):
-- Swap functions: ~8KB
-- LP management (addToCardReserve, etc): ~4KB
-- Multi-route logic: ~5KB
-- View functions: ~3KB
-- Events + storage: ~2KB
-
-**Optimization Strategies**:
-
-1. **Extract view functions to library** (~2KB savings)
-   ```solidity
-   library SurfSwapViews {
-       function getPrice(...) external view returns (uint256) { ... }
-   }
-   ```
-
-2. **Remove error strings** (~1KB savings)
-   ```solidity
-   // Before: require(msg.sender == router, "Only router");
-   // After:  require(msg.sender == router);
-   ```
-
-3. **Combine similar swap functions** (~2KB savings)
-   ```solidity
-   // Instead of _swapCardToWaves, _swapWavesToCard, _swapWethToWaves, _swapWavesToWeth
-   // Use a single _swap(tokenIn, tokenOut, amountIn) with conditional logic
-   ```
-
-4. **Increase optimizer_runs** (~1KB savings, but increases runtime gas)
-   ```toml
-   optimizer_runs = 1000  # (currently 200)
-   ```
-
-**Recommendation**: Implement optimizations 1-3 before mainnet. Keep optimizer at 200 for lower runtime costs.
+**Recommendation**: No further action required for size. (Optimizations like custom errors could still be applied for future cleanliness if desired.)
 
 ### 3. stakedCards Proportional Tracking
 
@@ -298,7 +263,7 @@ if (wavesWethReserve == 0 && wethReserve > 0) {
 
 ### 8. Zero Staked Cards Edge Case
 
-**Status**: 🐛 BUG (low severity)
+**Status**: ✅ FIXED (low severity bug)
 
 **Scenario**: All stakers unstake → `stakedCards = 0`, but pool still has 7.5M base.
 
@@ -342,6 +307,11 @@ if (cs.totalShares == 0 || currentStaked == 0) {
 
 **Recommendation**: ✅ Add re-bootstrap logic before mainnet.
 
+**Fix Applied (2026)**: Re-bootstrap logic added to `_stakeInternal`, `swapStake`, `batchSwapStake`, `unstake`, and `effectiveBalance` in `CardStaking.sol`:
+- If `currentStaked == 0` but shares exist, reset `totalShares=0` and bootstrap 1:1.
+- Prevents div-by-zero and stuck NFT ownership when staked liquidity fully drains.
+- All tests (51) pass post-fix.
+
 ## Security Review Needed
 
 - [ ] **External audit** by reputable firm (Trail of Bits, OpenZeppelin, etc.)
@@ -352,8 +322,11 @@ if (cs.totalShares == 0 || currentStaked == 0) {
 
 ## Pre-Mainnet Checklist
 
-- [ ] Fix contract size (SurfSwap <24KB)
-- [ ] Add re-bootstrap logic for zero staked cards
+- [x] Fix contract size (SurfSwap <24KB) — already resolved post-refactor (~6.7KB runtime)
+- [x] Add re-bootstrap logic for zero staked cards (FIXED in CardStaking.sol)
+- [x] Fix CRITICAL unbacked WETH bootstrap drain (real WAVES seed via router + no invented reserves)
+- [x] Fix HIGH cross-operator reentrancy in GlobalRewards (effects-before-interactions + guard)
+- [x] Fix MEDIUM BidNFT.balanceOf (override with guidance)
 - [ ] Implement fuzzing tests for proportional tracking
 - [ ] Document all rounding behavior in code comments
 - [ ] Add WETH bootstrap warning in UI
@@ -362,6 +335,24 @@ if (cs.totalShares == 0 || currentStaked == 0) {
 - [ ] Deploy to multiple testnets (Sepolia, Goerli, Arbitrum Sepolia)
 - [ ] Gather community feedback
 - [ ] Legal review (is this securities? consult lawyer)
+
+## Issues from External Audit (2026) — Fixed
+
+The following were reported via manual static review and have been patched:
+
+- **CRITICAL**: Unbacked WETH-pool bootstrap drain (SurfSwap.addToWethReserve invented 500 WAVES virtual with no backing transfer; first staker could drain real WAVES belonging to card pools).
+  - **Fix**: Removed all automatic invention of `wavesWethReserve`. Added explicit `seedWethLiquidity(uint256)` (router-only, does real WAVES transfer). Router now seeds 500 WAVES on first card creation. WETH pool requires real backing.
+  - Updated `initializePool` bootstrap comment. Added seed call + interface. Deployment now safe.
+
+- **HIGH**: Cross-contract reentrancy in GlobalRewards._harvest (debt updated *after* ETH `.call`; multiple operators (CardStaking + WethPool) bypass individual nonReentrant guards).
+  - **Fix**: Moved `userGlobalDebt` update before the external call (effects-before-interactions). Added `ReentrancyGuard` inheritance + `nonReentrant` on `harvestGlobal`.
+
+- **MEDIUM**: BidNFT.balanceOf() always returned 0 (never called _mint; virtual ownership via CardStaking).
+  - **Fix**: Override `balanceOf()` to revert with clear message directing callers to per-card `ownerOfCard` / CardStaking queries.
+
+- Legacy `WhirlpoolStaking.sol` marked `@deprecated` + note that it contained the same bootstrap bug (not used by current deploys).
+
+See also the detailed audit report provided for full context and exploit paths.
 
 ## Known Non-Issues
 
@@ -386,8 +377,8 @@ Watch for:
 
 ---
 
-**Last Updated**: 2026-02-07  
+**Last Updated**: 2026-07-02 (re-bootstrap patch applied; sizes/docs refreshed)  
 **Next Review**: After external audit  
-**Status**: ⚠️ NOT PRODUCTION READY
+**Status**: ⚠️ NOT PRODUCTION READY (major security patches from external audit applied: WETH bootstrap, GlobalRewards reentrancy, BidNFT; zero-staked also fixed earlier)
 
 **Contact**: [Your contact info here]
